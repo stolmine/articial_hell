@@ -28,11 +28,27 @@ fn main() -> io::Result<()> {
         let seed = args.iter().position(|a| a == "--seed")
             .and_then(|i| args.get(i + 1))
             .and_then(|s| s.parse().ok());
-        let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
         let compare = args.iter().any(|a| a == "--compare");
+        let campaign = args.iter().any(|a| a == "--campaign");
+        let num_campaigns = args.iter().position(|a| a == "--campaigns")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100);
+
+        // Logging: -v = all, --log-draft, --log-combat, --log-turns
+        let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
+        let log = if verbose {
+            sim::LogFlags::all()
+        } else {
+            sim::LogFlags {
+                draft: args.iter().any(|a| a == "--log-draft"),
+                combat: args.iter().any(|a| a == "--log-combat"),
+                turns: args.iter().any(|a| a == "--log-turns"),
+            }
+        };
 
         let config = sim::SimConfig {
-            num_fights: num, seed, verbose, compare,
+            num_fights: num, seed, compare, campaign, num_campaigns, log,
             tweaks: combat::BalanceTweaks::default(),
         };
         sim::balance_report(&config);
