@@ -1,7 +1,7 @@
 use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
 use crate::card::{TarotCard, MinorSuit, CourtRank};
-use crate::combat::{CombatAction, CombatState, Side};
+use crate::combat::{CombatAction, CombatState, Fighter, Side};
 use crate::game::{DraftStep, PlayerState};
 use crate::stats;
 
@@ -319,10 +319,28 @@ pub fn combat_pick(
             None => 0.0,
         };
 
+        // Knight doubled action bonus
+        let knight_bonus = if combat.knight_doubled[Side::Ai.index()] == Some(action) {
+            let uses = combat.knight_action_uses(Side::Ai, action);
+            if uses == 0 {
+                // First use of doubled — moderate bonus, prefer spreading across turns
+                match action {
+                    CombatAction::Weapon => if opp_hp_pct < 40 { 4.0 } else { 2.0 },
+                    CombatAction::Apparel => if hp_pct < 50 { 4.0 } else { 2.0 },
+                    CombatAction::Item => 2.5,
+                }
+            } else {
+                // Second use — slightly less eager
+                1.0
+            }
+        } else {
+            0.0
+        };
+
         // Random noise for unpredictability
         let noise: f32 = rng.random_range(-1.5..=1.5);
 
-        let total = seq_weight + situational + opponent_read + noise;
+        let total = seq_weight + situational + opponent_read + knight_bonus + noise;
         (action, total)
     }).collect();
 
@@ -330,4 +348,43 @@ pub fn combat_pick(
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(action, _)| *action)
         .unwrap_or(available[0])
+}
+
+pub fn queen_reassign(fighter: &Fighter, original_cards: [TarotCard; 3]) -> (TarotCard, TarotCard, TarotCard) {
+    use crate::game::QUEEN_PERMUTATIONS;
+
+    let aggression = match fighter.hero.suit() {
+        Some(MinorSuit::Swords) => 1.0_f32,
+        Some(MinorSuit::Wands) => 0.5,
+        Some(MinorSuit::Cups) => -0.5,
+        Some(MinorSuit::Pentacles) => -1.0,
+        None => 0.0,
+    };
+
+    let mut best_score = f32::NEG_INFINITY;
+    let mut best = (original_cards[0], original_cards[1], original_cards[2]);
+
+    for perm in &QUEEN_PERMUTATIONS {
+        let w = original_cards[perm[0]];
+        let a = original_cards[perm[1]];
+        let i = original_cards[perm[2]];
+        let s = stats::derive_stats(fighter.hero, w, a, i);
+
+        let atk_w = 1.0 + aggression * 0.5;
+        let def_w = 1.0 - aggression * 0.5;
+        let hp_w = 1.0 - aggression * 0.3;
+        let spd_w = 1.0 + aggression * 0.3;
+
+        let score = s.attack as f32 * atk_w
+            + s.defense as f32 * def_w
+            + s.hp as f32 * hp_w
+            + s.speed as f32 * spd_w;
+
+        if score > best_score {
+            best_score = score;
+            best = (w, a, i);
+        }
+    }
+
+    best
 }

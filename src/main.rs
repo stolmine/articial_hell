@@ -66,13 +66,27 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> 
                     KeyCode::Char('q') => break,
                     _ => {}
                 },
-                GamePhase::Combat => match key.code {
-                    KeyCode::Char(' ') | KeyCode::Enter => game.advance_from_combat(),
-                    KeyCode::Char('1') => game.combat_action(CombatAction::Weapon),
-                    KeyCode::Char('2') => game.combat_action(CombatAction::Apparel),
-                    KeyCode::Char('3') => game.combat_action(CombatAction::Item),
-                    KeyCode::Char('q') => break,
-                    _ => {}
+                GamePhase::Combat => {
+                    let queen_mode = game.combat.as_ref()
+                        .map(|c| c.awaiting_queen_reassign).unwrap_or(false);
+                    if queen_mode {
+                        match key.code {
+                            KeyCode::Left => game.queen_cycle_assignment(-1),
+                            KeyCode::Right => game.queen_cycle_assignment(1),
+                            KeyCode::Enter | KeyCode::Char(' ') => game.queen_confirm_assignment(),
+                            KeyCode::Char('q') => break,
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char(' ') | KeyCode::Enter => game.advance_from_combat(),
+                            KeyCode::Char('1') => game.combat_action(CombatAction::Weapon),
+                            KeyCode::Char('2') => game.combat_action(CombatAction::Apparel),
+                            KeyCode::Char('3') => game.combat_action(CombatAction::Item),
+                            KeyCode::Char('q') => break,
+                            _ => {}
+                        }
+                    }
                 },
                 GamePhase::GameOver { .. } => match key.code {
                     KeyCode::Char('n') => game = GameState::new_game(),

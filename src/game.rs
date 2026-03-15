@@ -59,6 +59,10 @@ pub enum GamePhase {
     },
 }
 
+pub const QUEEN_PERMUTATIONS: [[usize; 3]; 6] = [
+    [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+];
+
 pub struct GameState {
     pub phase: GamePhase,
     pub player: PlayerState,
@@ -73,6 +77,7 @@ pub struct GameState {
     pub theme: Theme,
     pub ai_personality: Option<AiPersonality>,
     rng: ChaCha8Rng,
+    pub queen_perm_index: usize,
 }
 
 impl GameState {
@@ -85,11 +90,12 @@ impl GameState {
             cursor: 0, theme: crate::theme::detect_theme(),
             ai_personality: None,
             rng: ChaCha8Rng::from_rng(&mut rand::rng()),
+            queen_perm_index: 0,
         }
     }
 
     pub fn new_game() -> Self {
-        let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
+        let rng = ChaCha8Rng::from_rng(&mut rand::rng());
         let mut state = Self {
             phase: GamePhase::Title, player: PlayerState::new(), ai_state: PlayerState::new(),
             player_deck: TarotDeck::new(), ai_deck: TarotDeck::new(),
@@ -97,6 +103,7 @@ impl GameState {
             message: String::new(),
             cursor: 0, theme: crate::theme::detect_theme(),
             ai_personality: None, rng,
+            queen_perm_index: 0,
         };
         state.start_fight();
         state
@@ -227,6 +234,9 @@ impl GameState {
                 Some(c) => c,
                 None => return,
             };
+            if combat.awaiting_queen_reassign {
+                return;
+            }
             if !combat.awaiting_action || combat.combat_over {
                 return;
             }
@@ -235,7 +245,6 @@ impl GameState {
             }
         }
 
-        // Immutable borrow for AI pick, then mutable for resolve
         let ai_action = {
             let combat = self.combat.as_ref().unwrap();
             ai::combat_pick(combat, self.ai_personality.as_ref(), &mut self.rng)
@@ -250,6 +259,33 @@ impl GameState {
                 format!("Fight {}/{} — Defeated. [Space] to continue", self.fight, MAX_FIGHTS)
             };
         }
+    }
+
+    pub fn queen_cycle_assignment(&mut self, delta: i32) {
+        let combat = match self.combat.as_ref() {
+            Some(c) if c.awaiting_queen_reassign => c,
+            _ => return,
+        };
+        if combat.queen_original_cards[0].is_none() { return; }
+        self.queen_perm_index = ((self.queen_perm_index as i32 + delta).rem_euclid(6)) as usize;
+    }
+
+    pub fn queen_confirm_assignment(&mut self) {
+        let cards = match self.combat.as_ref() {
+            Some(c) if c.awaiting_queen_reassign => {
+                match c.queen_original_cards[0] {
+                    Some(cards) => cards,
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        let perm = QUEEN_PERMUTATIONS[self.queen_perm_index];
+        let weapon = cards[perm[0]];
+        let apparel = cards[perm[1]];
+        let item = cards[perm[2]];
+        self.combat.as_mut().unwrap().queen_reassign_complete(weapon, apparel, item);
+        self.queen_perm_index = 0;
     }
 
     pub fn advance_from_combat(&mut self) {

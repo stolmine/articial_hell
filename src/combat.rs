@@ -1,6 +1,6 @@
 use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
-use crate::card::{MinorSuit, TarotCard};
+use crate::card::{CourtRank, MinorSuit, TarotCard};
 use crate::stats::{Stats, derive_stats};
 use crate::arcana::{ArcanaEffect, resolve_arcana};
 
@@ -20,7 +20,7 @@ impl Side {
     pub fn target_name(self) -> &'static str {
         match self { Side::Player => "you", Side::Ai => "enemy" }
     }
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         match self { Side::Player => 0, Side::Ai => 1 }
     }
 }
@@ -65,6 +65,30 @@ impl Fighter {
         let effective = base_amount * 100 / (100 + self.heal_count * 25);
         self.heal_count += 1;
         effective.max(0)
+    }
+
+    pub fn is_knight(&self) -> bool {
+        self.hero.court_rank() == Some(CourtRank::Knight)
+    }
+
+    pub fn is_queen(&self) -> bool {
+        self.hero.court_rank() == Some(CourtRank::Queen)
+    }
+
+    pub fn reassign_equipment(&mut self, weapon: TarotCard, apparel: TarotCard, item: TarotCard) {
+        let hp_ratio = if self.max_hp > 0 { self.current_hp as f64 / self.max_hp as f64 } else { 1.0 };
+        self.weapon = weapon;
+        self.apparel = apparel;
+        self.item = item;
+        let mut stats = derive_stats(self.hero, weapon, apparel, item);
+        let arcana = self.arcana.arcana().unwrap();
+        let effect = resolve_arcana(arcana, self.hero.suit(), &[weapon, apparel, item]);
+        stats.add(&effect.stat_bonus);
+        stats.hp = stats.hp.max(1);
+        self.stats = stats;
+        self.arcana_effect = effect;
+        self.max_hp = stats.hp;
+        self.current_hp = ((self.max_hp as f64 * hp_ratio).round() as i32).clamp(1, self.max_hp);
     }
 
     pub fn weapon_action_name(&self) -> &'static str {
@@ -113,6 +137,14 @@ impl CombatAction {
             CombatAction::Weapon => 0,
             CombatAction::Apparel => 1,
             CombatAction::Item => 2,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            CombatAction::Weapon => "Weapon",
+            CombatAction::Apparel => "Apparel",
+            CombatAction::Item => "Item",
         }
     }
 }
@@ -169,19 +201,49 @@ pub struct CombatState {
     pub combat_over: bool,
     pub player_won: bool,
     pub rng: ChaCha8Rng,
+    // Knight: which action is doubled this cycle (per side), and use counts
+    pub knight_doubled: [Option<CombatAction>; 2],
+    knight_uses: [[u8; 3]; 2],
+    // Queen: reassignment state
+    pub awaiting_queen_reassign: bool,
+    pub queen_original_cards: [Option<[TarotCard; 3]>; 2],
 }
 
 impl CombatState {
-    pub fn new(player: Fighter, ai: Fighter, rng: ChaCha8Rng) -> CombatState {
+    pub fn new(player: Fighter, ai: Fighter, mut rng: ChaCha8Rng) -> CombatState {
         let mut log = Vec::new();
         log.push(format!("Your arcana: {}", player.arcana));
         log.push(format!("Enemy arcana: {}", ai.arcana));
         log.push("--- Cycle 1 ---".to_string());
+
+        // Store original cards for Queen reassignment
+        let queen_original_cards = [
+            if player.is_queen() { Some([player.weapon, player.apparel, player.item]) } else { None },
+            if ai.is_queen() { Some([ai.weapon, ai.apparel, ai.item]) } else { None },
+        ];
+
+        // Roll Knight doubles for cycle 1
+        let mut knight_doubled = [None; 2];
+        if player.is_knight() {
+            let action = CombatAction::ALL[rng.random_range(0..3)];
+            knight_doubled[0] = Some(action);
+            log.push(format!("Your Knight doubles: {} x2!", action.name()));
+        }
+        if ai.is_knight() {
+            let action = CombatAction::ALL[rng.random_range(0..3)];
+            knight_doubled[1] = Some(action);
+            log.push(format!("Enemy Knight doubles: {} x2!", action.name()));
+        }
+
         CombatState {
             player, ai, log, turn: 1, cycle: 1,
             exhausted: [[false; 3]; 2],
             awaiting_action: true, combat_over: false, player_won: false,
             rng,
+            knight_doubled,
+            knight_uses: [[0; 3]; 2],
+            awaiting_queen_reassign: false,
+            queen_original_cards,
         }
     }
 
@@ -214,7 +276,14 @@ impl CombatState {
     }
 
     pub fn action_available(&self, side: Side, action: CombatAction) -> bool {
-        !self.exhausted(side)[action.index()]
+        if self.exhausted(side)[action.index()] {
+            return false;
+        }
+        // Knight doubled action: available if uses < 2
+        if self.knight_doubled[side.index()] == Some(action) {
+            return self.knight_uses[side.index()][action.index()] < 2;
+        }
+        true
     }
 
     pub fn available_actions(&self, side: Side) -> Vec<CombatAction> {
@@ -224,18 +293,100 @@ impl CombatState {
     }
 
     fn exhaust(&mut self, side: Side, action: CombatAction) {
-        self.exhausted_mut(side)[action.index()] = true;
+        let si = side.index();
+        let ai = action.index();
+        if self.knight_doubled[si] == Some(action) {
+            self.knight_uses[si][ai] += 1;
+            if self.knight_uses[si][ai] >= 2 {
+                self.exhausted_mut(side)[ai] = true;
+            }
+        } else {
+            self.exhausted_mut(side)[ai] = true;
+        }
+    }
+
+    fn side_cycle_complete(&self, side: Side) -> bool {
+        let si = side.index();
+        if self.knight_doubled[si].is_none() {
+            return self.exhausted(side).iter().all(|e| *e);
+        }
+        // Knight: count total turns used this cycle
+        let mut turns_used: u8 = 0;
+        for action in CombatAction::ALL {
+            let ai = action.index();
+            if self.knight_doubled[si] == Some(action) {
+                turns_used += self.knight_uses[si][ai];
+            } else if self.exhausted(side)[ai] {
+                turns_used += 1;
+            }
+        }
+        turns_used >= 3
+    }
+
+    pub fn knight_action_uses(&self, side: Side, action: CombatAction) -> u8 {
+        self.knight_uses[side.index()][action.index()]
     }
 
     fn check_both_cycles(&mut self) {
-        let player_all = self.exhausted(Side::Player).iter().all(|e| *e);
-        let ai_all = self.exhausted(Side::Ai).iter().all(|e| *e);
-        if player_all { *self.exhausted_mut(Side::Player) = [false; 3]; }
-        if ai_all { *self.exhausted_mut(Side::Ai) = [false; 3]; }
-        if player_all && ai_all {
+        let player_done = self.side_cycle_complete(Side::Player);
+        let ai_done = self.side_cycle_complete(Side::Ai);
+
+        if player_done {
+            // Auto-exhaust remaining actions (Knight's skipped action)
+            for a in CombatAction::ALL {
+                self.exhausted_mut(Side::Player)[a.index()] = true;
+            }
+            *self.exhausted_mut(Side::Player) = [false; 3];
+            self.knight_uses[0] = [0; 3];
+        }
+        if ai_done {
+            for a in CombatAction::ALL {
+                self.exhausted_mut(Side::Ai)[a.index()] = true;
+            }
+            *self.exhausted_mut(Side::Ai) = [false; 3];
+            self.knight_uses[1] = [0; 3];
+        }
+        if player_done && ai_done {
             self.cycle += 1;
             self.log.push(format!("--- Cycle {} ---", self.cycle));
+
+            // Roll new Knight doubles
+            for (si, side) in [(0, Side::Player), (1, Side::Ai)] {
+                if self.fighter(side).is_knight() {
+                    let action = CombatAction::ALL[self.rng.random_range(0..3)];
+                    self.knight_doubled[si] = Some(action);
+                    let name = side.name();
+                    self.log.push(format!("{name} Knight doubles: {} x2!", action.name()));
+                }
+            }
+
+            // Queen reassignment (cycle 2+)
+            self.trigger_queen_reassign();
         }
+    }
+
+    fn trigger_queen_reassign(&mut self) {
+        // AI Queen: reassign immediately
+        if self.ai.is_queen() {
+            if let Some(cards) = self.queen_original_cards[1] {
+                let best = crate::ai::queen_reassign(&self.ai, cards);
+                self.ai.reassign_equipment(best.0, best.1, best.2);
+                self.log.push(format!("Enemy Queen reshapes: Wpn={} App={} Itm={}", best.0, best.1, best.2));
+            }
+        }
+        // Player Queen: pause for input
+        if self.player.is_queen() {
+            self.awaiting_queen_reassign = true;
+            self.awaiting_action = false;
+            self.log.push("Your Queen can reassign equipment! [Left/Right] to cycle, [Enter] to confirm.".to_string());
+        }
+    }
+
+    pub fn queen_reassign_complete(&mut self, weapon: TarotCard, apparel: TarotCard, item: TarotCard) {
+        self.player.reassign_equipment(weapon, apparel, item);
+        self.awaiting_queen_reassign = false;
+        self.awaiting_action = true;
+        self.log.push(format!("Your Queen reshapes: Wpn={weapon} App={apparel} Itm={item}"));
     }
 
     pub fn resolve_turn(&mut self, player_action: CombatAction, ai_action: CombatAction) {

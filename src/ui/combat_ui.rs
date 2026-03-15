@@ -1,7 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use crate::game::{GameState, MAX_FIGHTS};
+use crate::game::{GameState, QUEEN_PERMUTATIONS, MAX_FIGHTS};
 use crate::combat::Fighter;
+use crate::stats::derive_stats;
 use crate::theme::Theme;
 use super::widgets;
 
@@ -53,6 +54,8 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
             .block(Block::bordered().title(" Result ")),
             actions_area,
         );
+    } else if combat.awaiting_queen_reassign {
+        render_queen_reassign(frame, actions_area, game, t);
     } else {
         use crate::combat::CombatAction;
         let actions: [(CombatAction, &str, &str); 3] = [
@@ -61,12 +64,23 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
             (CombatAction::Item, combat.player.item_action_name(), "Item"),
         ];
         let mut spans: Vec<Span> = Vec::new();
+        let is_knight = combat.player.is_knight();
         for (i, (action, name, slot)) in actions.iter().enumerate() {
             if i > 0 { spans.push(Span::raw("   ")); }
             let available = combat.action_available(crate::combat::Side::Player, *action);
-            let label = format!("[{}] {} ({})", i + 1, name, slot);
+            let doubled = is_knight && combat.knight_doubled[0] == Some(*action);
+            let suffix = if doubled {
+                let uses = combat.knight_action_uses(crate::combat::Side::Player, *action);
+                if uses == 0 { " x2" } else { " [1/2]" }
+            } else { "" };
+            let label = format!("[{}] {} ({}){}", i + 1, name, slot, suffix);
             if available {
-                spans.push(Span::styled(label, Style::default().fg(t.text)));
+                let style = if doubled {
+                    Style::default().fg(t.heading).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(t.text)
+                };
+                spans.push(Span::styled(label, style));
             } else {
                 spans.push(Span::styled(label, Style::default().fg(t.muted).add_modifier(Modifier::CROSSED_OUT)));
             }
@@ -124,4 +138,26 @@ fn render_fighter(frame: &mut Frame, area: Rect, fighter: &Fighter, label: &str,
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_queen_reassign(frame: &mut Frame, area: Rect, game: &GameState, t: &Theme) {
+    let combat = game.combat.as_ref().unwrap();
+    let cards = match combat.queen_original_cards[0] {
+        Some(c) => c,
+        None => return,
+    };
+    let perm = QUEEN_PERMUTATIONS[game.queen_perm_index];
+    let w = cards[perm[0]];
+    let a = cards[perm[1]];
+    let i = cards[perm[2]];
+    let preview = derive_stats(combat.player.hero, w, a, i);
+    let text = format!(
+        "[</>] Wpn:{} App:{} Itm:{} | ATK:{} DEF:{} HP:{} SPD:{} | [Enter] Confirm",
+        w, a, i, preview.attack, preview.defense, preview.hp, preview.speed,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(text, Style::default().fg(t.heading).add_modifier(Modifier::BOLD))).centered())
+            .block(Block::bordered().title(" Queen Reassign ")),
+        area,
+    );
 }
