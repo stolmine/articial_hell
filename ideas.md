@@ -460,6 +460,68 @@ feel like refined versions of the archetypes rather than stat-inflated generics.
 Pairs with adaptive scaling — performance-based N adjustment means dominant
 players face craftier opponents, not just bigger numbers.
 
+## AI Counter-Draft Scoring
+
+During equipment drafts (weapon/apparel/item), the AI can see the player's
+previously picked cards (hero is always visible, equipment is revealed per the
+DraftReveal phase). A counter-draft term in the scoring function lets the AI
+exploit the player's known weaknesses:
+
+### Information Available Per Step
+
+- **Weapon draft**: AI sees player's hero (suit/rank). Can infer stat profile
+  and likely strategy.
+- **Apparel draft**: AI sees player's hero + weapon. Knows their offensive
+  identity (Swords striker? Cups drainer? Wands quick-striker?).
+- **Item draft**: AI sees player's hero + weapon + apparel. Full offensive and
+  defensive identity known. Can target the gap.
+
+### Counter-Draft Heuristics
+
+Score modifier applied per card during AI equipment draft:
+
+    counter_score = weakness_exploit + archetype_counter + deny_bonus
+
+**Weakness exploit**: if player's build has an obvious stat gap, value cards
+that attack it.
+- Player has low DEF (Swords/Wands hero, no Pents apparel): favor high-ATK
+  weapons and piercing items (Backstab).
+- Player has low HP (Swords/Pents hero): favor sustain-denial (offense to
+  race them down).
+- Player has low ATK (Cups/Pents hero): favor sustain (can outlast them).
+
+**Archetype counter**: specific responses to known player equipment.
+- Player has Cups weapon (Drain): favor burst damage to kill before sustain
+  matters. Weight Swords/Pentacles weapons higher.
+- Player has Pentacles apparel (Fortify): favor piercing (Backstab item) or
+  Heavy Blow weapon (halves DEF).
+- Player has Wands item (Haste): favor Pentacles item (Barrier) to blank
+  the burst turn.
+
+**Deny bonus**: if a card would be exceptionally good for the player's build
+but the AI is picking from a shared-adjacent pool, small bonus for denying
+it. (Only relevant if draft pools overlap — currently they don't, but could
+in future draft formats.)
+
+### Scaling with Difficulty
+
+Counter-draft weight scales with AI difficulty / adaptive scaling:
+- Early fights: counter_score weight = 0 (AI drafts purely on personality)
+- Mid campaign: weight = 0.3-0.5 (AI notices obvious weaknesses)
+- Late game: weight = 1.0 (AI actively exploits build gaps)
+
+This layers naturally with simulated draft scaling (N drafts) — higher N +
+counter-draft awareness = AI that both builds coherently AND targets the
+player's weaknesses. Feels like facing a smarter opponent, not a stat-padded
+one.
+
+### Implementation Notes
+
+Counter-draft scoring only needs player's visible picks (already stored in
+`GameState.player`), opponent personality weights (already computed), and
+stat derivation (existing `partial_derive`). No new systems needed — it's
+an additional term in the existing `pick_equipment` scoring function.
+
 ## Enemy Combat Pane: Ability Icons
 
 The enemy pane during combat should show icons for each of the AI's three
