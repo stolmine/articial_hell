@@ -56,6 +56,7 @@ pub fn draft_pick(
     ai_state: &PlayerState,
     personality: Option<&AiPersonality>,
     rng: &mut ChaCha8Rng,
+    trace: Option<&mut Vec<String>>,
 ) -> usize {
     if choices.is_empty() {
         return 0;
@@ -63,11 +64,14 @@ pub fn draft_pick(
 
     match step {
         DraftStep::PickHero => {
-            // Random hero pick — personality doesn't exist yet
-            rng.random_range(0..choices.len())
+            let pick = rng.random_range(0..choices.len());
+            if let Some(t) = trace {
+                t.push(format!("  Hero draft: random pick {} from {:?}", choices[pick], choices));
+            }
+            pick
         }
         _ => {
-            pick_equipment(choices, step, ai_state, personality, rng)
+            pick_equipment(choices, step, ai_state, personality, rng, trace)
         }
     }
 }
@@ -107,7 +111,8 @@ fn pick_equipment(
     step: &DraftStep,
     ai_state: &PlayerState,
     personality: Option<&AiPersonality>,
-    rng: &mut ChaCha8Rng,
+    _rng: &mut ChaCha8Rng,
+    trace: Option<&mut Vec<String>>,
 ) -> usize {
     let pers = match personality {
         Some(p) => p,
@@ -133,7 +138,22 @@ fn pick_equipment(
         .filter_map(|o| o.and_then(|c| c.suit()))
         .collect();
 
-    let scores: Vec<f32> = choices.iter().map(|card| {
+    let step_name = match step {
+        DraftStep::PickWeapon => "Weapon",
+        DraftStep::PickApparel => "Apparel",
+        DraftStep::PickItem => "Item",
+        _ => "?",
+    };
+
+    let mut trace_lines: Vec<String> = Vec::new();
+    let tracing = trace.is_some();
+
+    if tracing {
+        trace_lines.push(format!("  {} draft (pers: {:?} aggr:{:.1} div:{:.1}):",
+            step_name, pers.hero_suit, pers.aggression, pers.diversity_weight));
+    }
+
+    let scores: Vec<f32> = choices.iter().enumerate().map(|(i, card)| {
         let base_value = card.numbered_value().unwrap_or(1) as f32;
         let card_suit = card.suit();
 
@@ -160,7 +180,14 @@ fn pick_equipment(
         };
 
         let delta = stat_delta_for_pick(hero, step, *card, current_weapon, current_apparel, current_item);
-        base_value + synergy + slot_weight + suit_align + delta as f32 * 0.3
+        let total = base_value + synergy + slot_weight + suit_align + delta as f32 * 0.3;
+
+        if tracing {
+            trace_lines.push(format!("    [{}] {:<16} base:{:.0} syn:{:+.1} slot:{:+.1} suit:{:+.1} delta:{:+.1} = {:.1}",
+                i + 1, format!("{}", card), base_value, synergy, slot_weight, suit_align, delta as f32 * 0.3, total));
+        }
+
+        total
     }).collect();
 
     let personality_pick = scores.iter()
@@ -178,19 +205,48 @@ fn pick_equipment(
     let delta_best = stat_delta_for_pick(hero, step, choices[raw_best], current_weapon, current_apparel, current_item);
     let delta_pers = stat_delta_for_pick(hero, step, choices[personality_pick], current_weapon, current_apparel, current_item);
 
-    if delta_best - delta_pers >= 5 { raw_best } else { personality_pick }
+    let final_pick = if delta_best - delta_pers >= 5 { raw_best } else { personality_pick };
+
+    if tracing {
+        let reason = if delta_best - delta_pers >= 5 {
+            format!("OVERRIDE: raw best {} (delta {} vs {})", choices[raw_best], delta_best, delta_pers)
+        } else {
+            format!("personality pick {}", choices[personality_pick])
+        };
+        trace_lines.push(format!("    => picked [{}] {} ({})", final_pick + 1, choices[final_pick], reason));
+    }
+
+    if let Some(t) = trace {
+        t.extend(trace_lines);
+    }
+
+    final_pick
 }
 
 pub fn combat_pick(
     combat: &CombatState,
     personality: Option<&AiPersonality>,
     rng: &mut ChaCha8Rng,
+    trace: Option<&mut Vec<String>>,
 ) -> CombatAction {
-    let available = combat.available_actions(Side::Ai);
+    combat_pick_for(combat, Side::Ai, personality, rng, trace)
+}
+
+pub fn combat_pick_for(
+    combat: &CombatState,
+    side: Side,
+    personality: Option<&AiPersonality>,
+    rng: &mut ChaCha8Rng,
+    trace: Option<&mut Vec<String>>,
+) -> CombatAction {
+    let available = combat.available_actions(side);
     if available.is_empty() {
         return CombatAction::Weapon;
     }
     if available.len() == 1 {
+        if let Some(t) = trace {
+            t.push(format!("  {} combat: forced {}", side.name(), available[0].name()));
+        }
         return available[0];
     }
 
@@ -206,16 +262,24 @@ pub fn combat_pick(
         }
     };
 
-    let fighter = combat.fighter(Side::Ai);
-    let opponent = combat.fighter(Side::Player);
+    let fighter = combat.fighter(side);
+    let opponent = combat.fighter(side.opponent());
     let hp_pct = if fighter.max_hp > 0 { fighter.current_hp * 100 / fighter.max_hp } else { 100 };
     let opp_hp_pct = if opponent.max_hp > 0 { opponent.current_hp * 100 / opponent.max_hp } else { 100 };
 
-    let opp_available = combat.available_actions(Side::Player);
+    let opp_available = combat.available_actions(side.opponent());
     let opp_forced = if opp_available.len() == 1 { Some(opp_available[0]) } else { None };
 
+    let tracing = trace.is_some();
+    let mut trace_lines: Vec<String> = Vec::new();
+
+    if tracing {
+        trace_lines.push(format!("  {} combat (hp:{}% opp:{}% opp_forced:{}):",
+            side.name(), hp_pct, opp_hp_pct,
+            opp_forced.map(|a| a.name()).unwrap_or("none")));
+    }
+
     let scores: Vec<(CombatAction, f32)> = available.iter().map(|&action| {
-        // Personality weight: position in default_sequence
         let seq_weight = match pers.default_sequence.iter().position(|&a| a == action) {
             Some(0) => 4.0,
             Some(1) => 2.0,
@@ -223,18 +287,14 @@ pub fn combat_pick(
             _ => 0.0,
         };
 
-        // Situational weight based on HP
         let situational = match action {
             CombatAction::Apparel => {
-                // More valuable when low HP
                 if hp_pct < 40 { 3.0 } else if hp_pct < 70 { 1.0 } else { 0.0 }
             }
             CombatAction::Weapon => {
-                // More valuable when opponent is low
                 if opp_hp_pct < 30 { 3.0 } else if opp_hp_pct < 60 { 1.0 } else { 0.0 }
             }
             CombatAction::Item => {
-                // Cups item (heal) more valuable when low HP
                 let item_suit = fighter.item.suit();
                 if item_suit == Some(MinorSuit::Cups) && hp_pct < 50 {
                     2.5
@@ -246,54 +306,62 @@ pub fn combat_pick(
             }
         };
 
-        // Opponent read: respond to forced action
         let opponent_read = match opp_forced {
             Some(CombatAction::Weapon) => {
-                // Opponent must attack — use defense
                 if action == CombatAction::Apparel { 4.0 } else { 0.0 }
             }
             Some(CombatAction::Apparel) => {
-                // Opponent must defend — attack harder
                 if action == CombatAction::Weapon { 3.0 }
                 else if action == CombatAction::Item { 2.0 }
                 else { 0.0 }
             }
             Some(CombatAction::Item) => {
-                // Opponent uses item — weapon is good
                 if action == CombatAction::Weapon { 2.0 } else { 0.0 }
             }
             None => 0.0,
         };
 
-        // Knight doubled action bonus
-        let knight_bonus = if combat.knight_doubled[Side::Ai.index()] == Some(action) {
-            let uses = combat.knight_action_uses(Side::Ai, action);
+        let knight_bonus = if combat.knight_doubled[side.index()] == Some(action) {
+            let uses = combat.knight_action_uses(side, action);
             if uses == 0 {
-                // First use of doubled — moderate bonus, prefer spreading across turns
                 match action {
                     CombatAction::Weapon => if opp_hp_pct < 40 { 4.0 } else { 2.0 },
                     CombatAction::Apparel => if hp_pct < 50 { 4.0 } else { 2.0 },
                     CombatAction::Item => 2.5,
                 }
             } else {
-                // Second use — slightly less eager
                 1.0
             }
         } else {
             0.0
         };
 
-        // Random noise for unpredictability
         let noise: f32 = rng.random_range(-1.5..=1.5);
 
         let total = seq_weight + situational + opponent_read + knight_bonus + noise;
+
+        if tracing {
+            trace_lines.push(format!("    {:<8} seq:{:.0} sit:{:.1} opp:{:.0} knt:{:.1} noi:{:+.1} = {:.1}",
+                action.name(), seq_weight, situational, opponent_read, knight_bonus, noise, total));
+        }
+
         (action, total)
     }).collect();
 
-    scores.iter()
+    let pick = scores.iter()
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(action, _)| *action)
-        .unwrap_or(available[0])
+        .unwrap_or(available[0]);
+
+    if tracing {
+        trace_lines.push(format!("    => {}", pick.name()));
+    }
+
+    if let Some(t) = trace {
+        t.extend(trace_lines);
+    }
+
+    pick
 }
 
 pub fn queen_reassign(fighter: &Fighter, original_cards: [TarotCard; 3]) -> (TarotCard, TarotCard, TarotCard) {

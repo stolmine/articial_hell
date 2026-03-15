@@ -3,7 +3,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use crate::ai::{self, AiPersonality};
 use crate::card::{TarotCard, MinorSuit, CourtRank};
-use crate::combat::{BalanceTweaks, CombatState, Fighter};
+use crate::combat::{BalanceTweaks, CombatState, Fighter, Side};
 use crate::deck::TarotDeck;
 use crate::game::{DraftStep, PlayerState};
 use crate::stats::derive_stats;
@@ -47,9 +47,10 @@ pub struct FightResult {
     pub p2_item_suit: MinorSuit,
 }
 
-fn ai_draft(deck: &mut TarotDeck, rng: &mut ChaCha8Rng) -> (PlayerState, AiPersonality) {
+fn ai_draft(deck: &mut TarotDeck, rng: &mut ChaCha8Rng, verbose: bool, label: &str) -> (PlayerState, AiPersonality) {
     let mut state = PlayerState::new();
     let mut personality: Option<AiPersonality> = None;
+    let mut trace: Vec<String> = Vec::new();
 
     let steps = [DraftStep::PickHero, DraftStep::PickWeapon, DraftStep::PickApparel, DraftStep::PickItem];
     for step in &steps {
@@ -57,12 +58,18 @@ fn ai_draft(deck: &mut TarotDeck, rng: &mut ChaCha8Rng) -> (PlayerState, AiPerso
             DraftStep::PickHero => deck.draw_court(4),
             _ => deck.draw_numbered(4),
         };
-        let idx = ai::draft_pick(&choices, step, &state, personality.as_ref(), rng);
+        let t = if verbose { Some(&mut trace) } else { None };
+        let idx = ai::draft_pick(&choices, step, &state, personality.as_ref(), rng, t);
         let card = choices[idx];
         state.set_slot(step, card);
         if *step == DraftStep::PickHero {
             personality = Some(AiPersonality::from_hero(card));
         }
+    }
+
+    if verbose && !trace.is_empty() {
+        println!("{label} draft:");
+        for line in &trace { println!("{line}"); }
     }
 
     (state, personality.unwrap())
@@ -107,16 +114,31 @@ fn run_combat(
             if combat.awaiting_queen_reassign { break; }
         }
 
-        let p1_action = ai::combat_pick(&combat, Some(p1_pers), rng);
-        let p2_action = ai::combat_pick(&combat, Some(p2_pers), rng);
+        let mut p1_trace: Vec<String> = Vec::new();
+        let mut p2_trace: Vec<String> = Vec::new();
+        let p1_action = ai::combat_pick_for(&combat, Side::Player, Some(p1_pers), rng,
+            if verbose { Some(&mut p1_trace) } else { None });
+        let p2_action = ai::combat_pick_for(&combat, Side::Ai, Some(p2_pers), rng,
+            if verbose { Some(&mut p2_trace) } else { None });
+
+        if verbose {
+            println!("  --- Turn {} ---", turn_count + 1);
+            for line in &p1_trace { println!("{line}"); }
+            for line in &p2_trace { println!("{line}"); }
+        }
+
+        let log_before = combat.log.len();
         combat.resolve_turn(p1_action, p2_action);
         turn_count += 1;
+
+        if verbose {
+            for entry in &combat.log[log_before..] {
+                println!("  {entry}");
+            }
+        }
     }
 
     if verbose {
-        for entry in &combat.log {
-            println!("  {entry}");
-        }
         let winner = if combat.player_won { "P1" } else { "P2" };
         println!("  => {winner} wins (turn {}, cycle {})\n", combat.turn, combat.cycle);
     }
@@ -161,8 +183,8 @@ fn generate_drafts(num: usize, seed: Option<u64>) -> (Vec<DraftPair>, ChaCha8Rng
         p1_deck.shuffle_all(&mut rng);
         p2_deck.shuffle_all(&mut rng);
 
-        let (p1, p1_pers) = ai_draft(&mut p1_deck, &mut rng);
-        let (p2, p2_pers) = ai_draft(&mut p2_deck, &mut rng);
+        let (p1, p1_pers) = ai_draft(&mut p1_deck, &mut rng, false, "P1");
+        let (p2, p2_pers) = ai_draft(&mut p2_deck, &mut rng, false, "P2");
         pairs.push(DraftPair { p1, p1_pers, p2, p2_pers });
     }
 
@@ -177,8 +199,35 @@ fn run_with_tweaks(pairs: &[DraftPair], tweaks: &BalanceTweaks, base_rng: &ChaCh
 }
 
 pub fn run_sim(config: &SimConfig) -> Vec<FightResult> {
-    let (pairs, base_rng) = generate_drafts(config.num_fights, config.seed);
-    run_with_tweaks(&pairs, &config.tweaks, &base_rng, config.verbose)
+    if config.verbose {
+        // Verbose mode: draft and fight inline so we can trace both
+        let mut rng = match config.seed {
+            Some(s) => ChaCha8Rng::seed_from_u64(s),
+            None => ChaCha8Rng::from_rng(&mut rand::rng()),
+        };
+        let mut results = Vec::with_capacity(config.num_fights);
+        for i in 0..config.num_fights {
+            let mut p1_deck = TarotDeck::new();
+            let mut p2_deck = TarotDeck::new();
+            p1_deck.shuffle_all(&mut rng);
+            p2_deck.shuffle_all(&mut rng);
+
+            println!("=== Fight {} ===", i + 1);
+            let (p1, p1_pers) = ai_draft(&mut p1_deck, &mut rng, true, "P1");
+            let (p2, p2_pers) = ai_draft(&mut p2_deck, &mut rng, true, "P2");
+            println!("P1: {} | Wpn:{} App:{} Itm:{}",
+                p1.hero.unwrap(), p1.weapon.unwrap(), p1.apparel.unwrap(), p1.item.unwrap());
+            println!("P2: {} | Wpn:{} App:{} Itm:{}",
+                p2.hero.unwrap(), p2.weapon.unwrap(), p2.apparel.unwrap(), p2.item.unwrap());
+
+            let fight = run_combat(&p1, &p1_pers, &p2, &p2_pers, &mut rng, &config.tweaks, true);
+            results.push(fight);
+        }
+        results
+    } else {
+        let (pairs, base_rng) = generate_drafts(config.num_fights, config.seed);
+        run_with_tweaks(&pairs, &config.tweaks, &base_rng, false)
+    }
 }
 
 // --- Analysis ---
@@ -253,6 +302,10 @@ fn analyze(results: &[FightResult]) -> QuickStats {
         w_atk += ws.attack as i64; w_def += ws.defense as i64; w_hp += ws.hp as i64; w_spd += ws.speed as i64;
         l_atk += ls.attack as i64; l_def += ls.defense as i64; l_hp += ls.hp as i64; l_spd += ls.speed as i64;
     }
+
+    // Ensure all suits/ranks present (small sample sizes may miss some)
+    for s in &MinorSuit::ALL { suit_rec.entry(*s).or_insert_with(WinRecord::new); }
+    for r in &CourtRank::ALL { rank_rec.entry(*r).or_insert_with(WinRecord::new); }
 
     let mut suit_wr: Vec<_> = suit_rec.into_iter().map(|(s, r)| (s, r.rate())).collect();
     suit_wr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());

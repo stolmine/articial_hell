@@ -152,7 +152,7 @@ impl GameState {
         let card = choices[index];
         self.player.set_slot(&step, card);
 
-        let ai_idx = ai::draft_pick(&ai_choices, &step, &self.ai_state, self.ai_personality.as_ref(), &mut self.rng);
+        let ai_idx = ai::draft_pick(&ai_choices, &step, &self.ai_state, self.ai_personality.as_ref(), &mut self.rng, None);
         let ai_card = ai_choices[ai_idx];
         self.ai_state.set_slot(&step, ai_card);
         if step == DraftStep::PickHero {
@@ -231,7 +231,7 @@ impl GameState {
 
         let ai_action = {
             let combat = self.combat.as_ref().unwrap();
-            ai::combat_pick(combat, self.ai_personality.as_ref(), &mut self.rng)
+            ai::combat_pick(combat, self.ai_personality.as_ref(), &mut self.rng, None)
         };
         let combat = self.combat.as_mut().unwrap();
         combat.resolve_turn(action, ai_action);
