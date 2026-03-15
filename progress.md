@@ -38,7 +38,9 @@
 ## To Implement
 
 ### Combat
-- [ ] Damage ranges: random between floor and card rank
+- [x] Damage ranges: random between floor and card rank
+- [x] Knight Wildcard: random action doubled per cycle, 3 turns with one skipped, AI awareness
+- [x] Queen Shapeshifter: equipment slot reassignment at cycle 2+, stat preview, AI evaluation
 - [ ] Arcana as fate cards: drawn per cycle from shared pool, rule-changing effects
 
 ### Code Quality (2026-03-15)
@@ -61,10 +63,10 @@
 - [ ] Rank path deepening: diversity/matching bonuses scale with commitment
 - [ ] Adaptive AI scaling: based on player win margin (HP remaining, turns to win)
 
-### Court Rank Differentiation
-- [ ] Knight: random action doubled per cycle (x2), still 3 turns, one action skipped
-- [ ] Queen: slot reassignment — swap equipment between weapon/apparel/item at cycle start
-- [ ] Page/King keep current synergy bonuses, Knight/Queen get unique mechanics instead
+### Court Rank Differentiation (2026-03-15)
+- [x] Knight: random action doubled per cycle (x2), still 3 turns, one action skipped
+- [x] Queen: slot reassignment — swap equipment between weapon/apparel/item at cycle start
+- [x] Page/King keep current synergy bonuses, Knight/Queen get unique mechanics instead
 
 ### Balance
 - [ ] Low card compensation (Ace-3 special effects)

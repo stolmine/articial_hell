@@ -13,16 +13,16 @@
 - `src/arcana.rs` — Major Arcana effects: 22 arcana with stat bonuses and special abilities (always-first, double-first-hit, heal/turn, death curse)
 
 ### Combat
-- `src/combat.rs` — Combat engine: `Side` enum (Player/Ai) with name/opponent accessors, `Fighter` struct, `CombatState` with exhaustion cycles, `FighterFlags` for per-side turn state, weapon/apparel/item resolution, damage/healing with rolls
-- `src/ai.rs` — AI systems: `AiPersonality` (hero-seeded rank/suit weights), draft scoring (synergy + playstyle + stat delta), combat action scoring (personality + situational + opponent read + noise), `stat_delta_for_pick` helper
+- `src/combat.rs` — Combat engine: `Side` enum (Player/Ai) with name/opponent accessors, `Fighter` struct with `reassign_equipment`, `CombatState` with exhaustion cycles + Knight doubled tracking + Queen reassignment flow, `FighterFlags` for per-side turn state, weapon/apparel/item resolution, damage/healing with rolls
+- `src/ai.rs` — AI systems: `AiPersonality` (hero-seeded rank/suit weights), draft scoring (synergy + playstyle + stat delta), combat action scoring (personality + situational + opponent read + Knight doubled bonus + noise), `queen_reassign` permutation evaluator, `stat_delta_for_pick` helper
 
 ### Game Flow
-- `src/game.rs` — Game state machine: title, draft (5-step sequential), combat, game over. `PlayerState::set_slot` for draft picks, 10-fight campaign
+- `src/game.rs` — Game state machine: title, draft (5-step sequential), combat, game over. `PlayerState::set_slot` for draft picks, Queen reassignment cycling/confirmation, 10-fight campaign
 - `src/main.rs` — Entry point: terminal setup, input handling, render loop
 
 ### UI
 - `src/ui/mod.rs` — UI router: delegates to phase-specific renderers
-- `src/ui/combat_ui.rs` — Combat screen: fighter panes, action bar with exhaustion display, combat log
+- `src/ui/combat_ui.rs` — Combat screen: fighter panes, action bar with exhaustion + Knight doubled display, Queen reassignment screen, combat log
 - `src/ui/draft.rs` — Draft screen: card choices, tooltip, stat preview, picks list
 - `src/ui/title.rs` — Title screen
 - `src/ui/card_art.rs` — Card visual rendering
