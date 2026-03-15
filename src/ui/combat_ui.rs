@@ -2,8 +2,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use crate::game::{GameState, QUEEN_PERMUTATIONS, MAX_FIGHTS};
 use crate::fate::fate_description;
-use crate::combat::Fighter;
-use crate::stats::derive_stats;
+use crate::combat::{Fighter, Side};
+use crate::stats::{Stats, derive_stats};
 use crate::theme::Theme;
 use super::widgets;
 
@@ -41,8 +41,10 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
     ])
     .areas(fighters_area);
 
-    render_fighter(frame, player_area, &combat.player, "YOU", t);
-    render_fighter(frame, ai_area, &combat.ai, "OPPONENT", t);
+    let player_stats = combat.effective_stats(Side::Player);
+    let ai_stats = combat.effective_stats(Side::Ai);
+    render_fighter(frame, player_area, &combat.player, &player_stats, "YOU", t);
+    render_fighter(frame, ai_area, &combat.ai, &ai_stats, "OPPONENT", t);
 
     if combat.combat_over {
         let (result_text, result_color) = if combat.player_won {
@@ -114,7 +116,7 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
     );
 }
 
-fn render_fighter(frame: &mut Frame, area: Rect, fighter: &Fighter, label: &str, t: &Theme) {
+fn render_fighter(frame: &mut Frame, area: Rect, fighter: &Fighter, eff_stats: &Stats, label: &str, t: &Theme) {
     let block = Block::bordered().title(format!(" {label} "));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -128,7 +130,7 @@ fn render_fighter(frame: &mut Frame, area: Rect, fighter: &Fighter, label: &str,
         Line::from(Span::styled(hp_line, Style::default().fg(t.positive))),
     ];
 
-    for stat_line in widgets::stat_block(&fighter.stats) {
+    for stat_line in widgets::stat_block(eff_stats) {
         lines.push(stat_line);
     }
 

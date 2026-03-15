@@ -201,6 +201,13 @@ pub struct CombatState {
     // Queen: reassignment state
     pub awaiting_queen_reassign: bool,
     pub queen_original_cards: [Option<[TarotCard; 3]>; 2],
+    // Fate tracking
+    star_barriers: [bool; 2],
+    momentum_count: [i32; 2],
+    first_weapon_this_cycle: [bool; 2],
+    second_strike_active: bool,
+    applied_flat_bonus: i32,
+    items_swapped: bool,
 }
 
 impl CombatState {
@@ -238,7 +245,13 @@ impl CombatState {
             log.push(format!("Enemy Knight doubles: {} x2!", action.name()));
         }
 
-        CombatState {
+        // Star barrier init
+        let star_barriers = [fate_effect.start_with_barrier, fate_effect.start_with_barrier];
+
+        // World flat stat bonus
+        let applied_flat_bonus = fate_effect.flat_stat_bonus;
+
+        let mut state = CombatState {
             player, ai, log, turn: 1, cycle: 1,
             exhausted: [[false; 3]; 2],
             awaiting_action: true, combat_over: false, player_won: false,
@@ -248,14 +261,87 @@ impl CombatState {
             knight_uses: [[0; 3]; 2],
             awaiting_queen_reassign: false,
             queen_original_cards,
+            star_barriers,
+            momentum_count: [0; 2],
+            first_weapon_this_cycle: [false; 2],
+            second_strike_active: false,
+            applied_flat_bonus: 0,
+            items_swapped: false,
+        };
+
+        // Apply World bonus
+        if applied_flat_bonus != 0 {
+            state.apply_flat_bonus(applied_flat_bonus);
+            state.applied_flat_bonus = applied_flat_bonus;
+        }
+
+        // Fool: swap items
+        if fate_effect.swap_items {
+            state.swap_items();
+        }
+
+        state
+    }
+
+    fn swap_items(&mut self) {
+        let p_item = self.player.item;
+        let a_item = self.ai.item;
+        self.player.reassign_equipment(self.player.weapon, self.player.apparel, a_item);
+        self.ai.reassign_equipment(self.ai.weapon, self.ai.apparel, p_item);
+        self.items_swapped = !self.items_swapped;
+        if self.items_swapped {
+            self.log.push("The Fool swaps items between fighters!".to_string());
+        } else {
+            self.log.push("Items return to their original owners.".to_string());
+        }
+    }
+
+    fn apply_flat_bonus(&mut self, bonus: i32) {
+        for side in [Side::Player, Side::Ai] {
+            let f = self.fighter_mut(side);
+            f.stats.attack += bonus;
+            f.stats.defense += bonus;
+            f.stats.speed += bonus;
+            f.stats.hp += bonus;
+            f.max_hp += bonus;
+            f.current_hp = (f.current_hp + bonus).max(1);
         }
     }
 
     fn draw_fate(&mut self) {
+        // Undo previous Fool swap
+        if self.items_swapped {
+            self.swap_items();
+        }
+
+        // Undo previous World bonus
+        if self.applied_flat_bonus != 0 {
+            self.apply_flat_bonus(-self.applied_flat_bonus);
+            self.applied_flat_bonus = 0;
+        }
+
         self.current_fate = self.fate_pool.pop();
         self.fate_effect = self.current_fate.map(|a| resolve_fate(a)).unwrap_or_default();
         if let Some(arcana) = self.current_fate {
             self.log.push(format!("Fate: {} — {}", arcana, fate_description(arcana)));
+        }
+
+        // Star barrier reset
+        self.star_barriers = [self.fate_effect.start_with_barrier, self.fate_effect.start_with_barrier];
+
+        // Reset per-cycle tracking
+        self.first_weapon_this_cycle = [false; 2];
+        self.momentum_count = [0; 2];
+
+        // Apply new World bonus
+        if self.fate_effect.flat_stat_bonus != 0 {
+            self.apply_flat_bonus(self.fate_effect.flat_stat_bonus);
+            self.applied_flat_bonus = self.fate_effect.flat_stat_bonus;
+        }
+
+        // Fool: swap items
+        if self.fate_effect.swap_items {
+            self.swap_items();
         }
     }
 
@@ -275,16 +361,58 @@ impl CombatState {
         &mut self.exhausted[side.index()]
     }
 
+    pub fn effective_stats(&self, side: Side) -> Stats {
+        let f = self.fighter(side);
+        if self.fate_effect.swap_atk_def {
+            Stats { attack: f.stats.defense, defense: f.stats.attack, ..f.stats }
+        } else {
+            f.stats
+        }
+    }
+
+    fn effective_atk(&self, side: Side) -> i32 {
+        let f = self.fighter(side);
+        if self.fate_effect.swap_atk_def { f.stats.defense } else { f.stats.attack }
+    }
+
+    fn effective_def(&self, side: Side) -> i32 {
+        let f = self.fighter(side);
+        if self.fate_effect.swap_atk_def { f.stats.attack } else { f.stats.defense }
+    }
+
     fn roll_effect(&mut self, base: i32, floor: i32) -> Roll {
         if base <= floor {
             return Roll { value: base, low: base, high: base };
         }
-        let low = floor.max(base * 2 / 3);
-        if low >= base {
+        let fe = &self.fate_effect;
+        if fe.use_max_rolls {
             return Roll { value: base, low: base, high: base };
         }
-        let value = self.rng.random_range(low..=base);
-        Roll { value, low, high: base }
+        if fe.use_min_rolls {
+            let low = floor.max(base * 2 / 3);
+            return Roll { value: low, low, high: base };
+        }
+        let (low, high) = if fe.chaos_rolls {
+            (0, base * 2)
+        } else {
+            (floor.max(base * 2 / 3), base)
+        };
+        if low >= high {
+            return Roll { value: high, low: high, high };
+        }
+        let value = self.rng.random_range(low..=high);
+        Roll { value, low, high }
+    }
+
+    fn apply_heal(&mut self, side: Side, base_heal: i32) -> i32 {
+        if self.fate_effect.disable_healing {
+            return 0;
+        }
+        let adjusted = base_heal * self.fate_effect.heal_multiplier_pct / 100;
+        let f = self.fighter_mut(side);
+        let heal = f.diminished_heal(adjusted);
+        f.current_hp = (f.current_hp + heal).min(f.max_hp);
+        heal
     }
 
     pub fn action_available(&self, side: Side, action: CombatAction) -> bool {
@@ -293,7 +421,31 @@ impl CombatState {
         }
         // Knight doubled action: available if uses < 2
         if self.knight_doubled[side.index()] == Some(action) {
-            return self.knight_uses[side.index()][action.index()] < 2;
+            if self.knight_uses[side.index()][action.index()] >= 2 {
+                return false;
+            }
+        }
+        // Hierophant forced order
+        if self.fate_effect.force_action_order {
+            let order = [CombatAction::Weapon, CombatAction::Apparel, CombatAction::Item];
+            for &required in &order {
+                if required == action {
+                    return true;
+                }
+                // If this earlier action is still available, block later ones
+                let ri = required.index();
+                let exhausted = self.exhausted(side)[ri];
+                if !exhausted {
+                    // Knight: check if doubled action still has uses
+                    if self.knight_doubled[side.index()] == Some(required) {
+                        if self.knight_uses[side.index()][ri] < 2 {
+                            return false; // Must use this doubled action first
+                        }
+                    } else {
+                        return false; // Must use this action first
+                    }
+                }
+            }
         }
         true
     }
@@ -344,12 +496,13 @@ impl CombatState {
         let ai_done = self.side_cycle_complete(Side::Ai);
 
         if player_done {
-            // Auto-exhaust remaining actions (Knight's skipped action)
             for a in CombatAction::ALL {
                 self.exhausted_mut(Side::Player)[a.index()] = true;
             }
             *self.exhausted_mut(Side::Player) = [false; 3];
             self.knight_uses[0] = [0; 3];
+            self.first_weapon_this_cycle[0] = false;
+            self.momentum_count[0] = 0;
         }
         if ai_done {
             for a in CombatAction::ALL {
@@ -357,6 +510,8 @@ impl CombatState {
             }
             *self.exhausted_mut(Side::Ai) = [false; 3];
             self.knight_uses[1] = [0; 3];
+            self.first_weapon_this_cycle[1] = false;
+            self.momentum_count[1] = 0;
         }
         if player_done && ai_done {
             self.cycle += 1;
@@ -424,16 +579,25 @@ impl CombatState {
         self.apply_apparel(player_action, Side::Player, &mut flags);
         self.apply_apparel(ai_action, Side::Ai, &mut flags);
 
-        if player_first {
-            self.apply_action(player_action, Side::Player, &mut flags);
-            if self.ai.current_hp > 0 {
-                self.apply_action(ai_action, Side::Ai, &mut flags);
-            }
+        let (first_side, first_action, second_side, second_action) = if player_first {
+            (Side::Player, player_action, Side::Ai, ai_action)
         } else {
-            self.apply_action(ai_action, Side::Ai, &mut flags);
-            if self.player.current_hp > 0 {
-                self.apply_action(player_action, Side::Player, &mut flags);
-            }
+            (Side::Ai, ai_action, Side::Player, player_action)
+        };
+
+        self.apply_action(first_action, first_side, &mut flags);
+        if self.fighter(second_side).current_hp > 0 {
+            self.second_strike_active = true;
+            self.apply_action(second_action, second_side, &mut flags);
+            self.second_strike_active = false;
+        }
+
+        // Momentum reset: if action was not Weapon, reset momentum
+        if player_action != CombatAction::Weapon {
+            self.momentum_count[0] = 0;
+        }
+        if ai_action != CombatAction::Weapon {
+            self.momentum_count[1] = 0;
         }
 
         if self.fate_effect.heal_per_turn > 0 {
@@ -443,12 +607,17 @@ impl CombatState {
                     let base = self.fate_effect.heal_per_turn;
                     let floor = self.fate_effect.damage_floor.unwrap_or(HEAL_FLOOR);
                     let roll = self.roll_effect(base, floor);
-                    let f = self.fighter_mut(side);
-                    let h = f.diminished_heal(roll.value);
-                    f.current_hp = (f.current_hp + h).min(f.max_hp);
                     let name = side.name();
                     let verb = match side { Side::Player => "regenerate", Side::Ai => "regenerates" };
-                    self.log.push(format!("{name} {verb} {h} HP (Fate) [base {base}, rolled {}]", roll.fmt()));
+                    if self.fate_effect.disable_healing {
+                        self.log.push(format!("{name} — healing disabled (Fate)"));
+                    } else {
+                        let adjusted = roll.value * self.fate_effect.heal_multiplier_pct / 100;
+                        let f = self.fighter_mut(side);
+                        let h = f.diminished_heal(adjusted);
+                        f.current_hp = (f.current_hp + h).min(f.max_hp);
+                        self.log.push(format!("{name} {verb} {h} HP (Fate) [base {base}, rolled {}]", roll.fmt()));
+                    }
                 }
             }
         }
@@ -470,10 +639,9 @@ impl CombatState {
     }
 
     fn def_breakdown(&self, side: Side, flags: &TurnFlags) -> (i32, String) {
-        let f = self.fighter(side);
         let ff = flags.get(side);
-        let raw = f.stats.defense * self.fate_effect.defense_multiplier_pct / 100;
-        let spd = f.stats.speed;
+        let raw = self.effective_def(side) * self.fate_effect.defense_multiplier_pct / 100;
+        let spd = self.fighter(side).stats.speed;
 
         if ff.fortify {
             let eff = raw * 3;
@@ -499,7 +667,7 @@ impl CombatState {
         if action != CombatAction::Apparel { return; }
         let f = self.fighter(side);
         let suit = f.apparel.suit();
-        let raw_def = f.stats.defense;
+        let raw_def = self.effective_def(side);
         let spd = f.stats.speed;
         let name = side.name();
 
@@ -526,13 +694,15 @@ impl CombatState {
                 };
                 let base = base_heal.max(1);
                 let roll = self.roll_effect(base, HEAL_FLOOR);
-                let f = self.fighter_mut(side);
-                let heal = f.diminished_heal(roll.value);
-                f.current_hp = (f.current_hp + heal).min(f.max_hp);
-                if last_dmg > 0 {
-                    self.log.push(format!("{name} uses Restore — {heal} HP [{last_dmg} dmg taken x60% = {base}, rolled {}]", roll.fmt()));
+                if self.fate_effect.disable_healing {
+                    self.log.push(format!("{name} uses Restore — healing disabled (Fate)"));
                 } else {
-                    self.log.push(format!("{name} uses Restore — {heal} HP (minor) [rolled {}]", roll.fmt()));
+                    let heal = self.apply_heal(side, roll.value);
+                    if last_dmg > 0 {
+                        self.log.push(format!("{name} uses Restore — {heal} HP [{last_dmg} dmg taken x60% = {base}, rolled {}]", roll.fmt()));
+                    } else {
+                        self.log.push(format!("{name} uses Restore — {heal} HP (minor) [rolled {}]", roll.fmt()));
+                    }
                 }
             }
             None => {}
@@ -548,9 +718,8 @@ impl CombatState {
     }
 
     fn apply_weapon(&mut self, side: Side, flags: &mut TurnFlags) {
-        let f = self.fighter(side);
-        let atk = f.stats.attack;
-        let suit = f.weapon.suit();
+        let atk = self.effective_atk(side);
+        let suit = self.fighter(side).weapon.suit();
         let target = side.opponent();
         let (def, def_str) = self.def_breakdown(target, flags);
         let barrier = flags.get(target).barrier;
@@ -559,19 +728,42 @@ impl CombatState {
         let dmg_floor = self.fate_effect.damage_floor.unwrap_or(DAMAGE_FLOOR);
         let dmg_bonus = self.fate_effect.damage_bonus;
         let dmg_mult = self.fate_effect.damage_multiplier_pct;
+        let momentum = self.fate_effect.momentum_bonus * self.momentum_count[side.index()];
 
         if barrier {
             self.log.push(format!("{name} attacks but the Barrier blocks all damage!"));
             return;
         }
 
+        let is_first_weapon = self.first_weapon_this_cycle[side.index()];
+        let magician = self.fate_effect.first_action_double;
+
+        let calc_final_dmg = |raw_dmg: i32| -> i32 {
+            let mut dmg = raw_dmg * dmg_mult / 100;
+            dmg += momentum;
+            if magician && !is_first_weapon {
+                dmg *= 2;
+            }
+            dmg
+        };
+
+        // Build fate modifier suffix for readout
+        let mut mods = Vec::new();
+        if dmg_bonus != 0 { mods.push(format!("+{dmg_bonus} Sun")); }
+        if dmg_mult != 100 { mods.push(format!("x{}%", dmg_mult)); }
+        if momentum > 0 { mods.push(format!("+{momentum} momentum")); }
+        if magician && !is_first_weapon { mods.push("x2 Magician".to_string()); }
+        let fate_suffix = if mods.is_empty() { String::new() } else { format!(", {}", mods.join(", ")) };
+
+        let bonus_str = if dmg_bonus != 0 { format!(" + {dmg_bonus}") } else { String::new() };
+
         match suit {
             Some(MinorSuit::Swords) | None => {
                 let base = (atk + dmg_bonus - def).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
-                let dmg = roll.value * dmg_mult / 100;
-                let detail = format!("{atk} ATK - {def_str} = {base}, rolled {}", roll.fmt());
-                self.deal_damage(target, dmg);
+                let dmg = calc_final_dmg(roll.value);
+                let detail = format!("{atk} ATK{bonus_str} - {def_str} = {base}, rolled {}{fate_suffix}", roll.fmt());
+                self.deal_damage(Some(side), target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Strike on {tgt} for {dmg} damage [{detail}]"));
             }
@@ -579,23 +771,25 @@ impl CombatState {
                 let raw = atk * 60 / 100;
                 let base = (raw + dmg_bonus - def).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
-                let dmg = roll.value * dmg_mult / 100;
-                let detail = format!("{atk} ATK x60% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
-                self.deal_damage(target, dmg);
+                let dmg = calc_final_dmg(roll.value);
+                let detail = format!("{atk} ATK x60% = {raw}{bonus_str} - {def_str} = {base}, rolled {}{fate_suffix}", roll.fmt());
+                self.deal_damage(Some(side), target, dmg);
                 self.riposte_check(side, flags);
-                let heal_roll = self.roll_effect(dmg, HEAL_FLOOR);
-                let f = self.fighter_mut(side);
-                let heal = f.diminished_heal(heal_roll.value);
-                f.current_hp = (f.current_hp + heal).min(f.max_hp);
-                self.log.push(format!("{name} uses Drain on {tgt} for {dmg} damage, heals {heal} HP [{detail}; heal rolled {}]", heal_roll.fmt()));
+                if self.fate_effect.disable_healing {
+                    self.log.push(format!("{name} uses Drain on {tgt} for {dmg} damage — healing disabled (Fate) [{detail}]"));
+                } else {
+                    let heal_roll = self.roll_effect(dmg, HEAL_FLOOR);
+                    let heal = self.apply_heal(side, heal_roll.value);
+                    self.log.push(format!("{name} uses Drain on {tgt} for {dmg} damage, heals {heal} HP [{detail}; heal rolled {}]", heal_roll.fmt()));
+                }
             }
             Some(MinorSuit::Wands) => {
                 let raw = atk * 70 / 100;
                 let base = (raw + dmg_bonus - def).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
-                let dmg = roll.value * dmg_mult / 100;
-                let detail = format!("{atk} ATK x70% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
-                self.deal_damage(target, dmg);
+                let dmg = calc_final_dmg(roll.value);
+                let detail = format!("{atk} ATK x70% = {raw}{bonus_str} - {def_str} = {base}, rolled {}{fate_suffix}", roll.fmt());
+                self.deal_damage(Some(side), target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Quick Strike on {tgt} for {dmg} damage [{detail}]"));
             }
@@ -604,23 +798,30 @@ impl CombatState {
                 let half_def = def / 2;
                 let base = (raw_atk + dmg_bonus - half_def).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
-                let dmg = roll.value * dmg_mult / 100;
-                let detail = format!("{atk} ATK x120% = {raw_atk} - {def_str}/2 = {base}, rolled {}", roll.fmt());
-                self.deal_damage(target, dmg);
+                let dmg = calc_final_dmg(roll.value);
+                let detail = format!("{atk} ATK x120% = {raw_atk}{bonus_str} - {def_str}/2 = {base}, rolled {}{fate_suffix}", roll.fmt());
+                self.deal_damage(Some(side), target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Heavy Blow on {tgt} for {dmg} damage [{detail}]"));
             }
         }
+
+        // Magician: mark first weapon used
+        if !self.first_weapon_this_cycle[side.index()] {
+            self.first_weapon_this_cycle[side.index()] = true;
+        }
+        // Chariot: increment momentum
+        self.momentum_count[side.index()] += 1;
     }
 
     fn riposte_check(&mut self, attacker: Side, flags: &TurnFlags) {
         let defender = attacker.opponent();
         if !flags.get(defender).riposte { return; }
-        let def_atk = self.fighter(defender).stats.attack;
+        let def_atk = self.effective_atk(defender);
         let base = (def_atk * 30 / 100).max(1);
         let roll = self.roll_effect(base, 1);
         let counter = roll.value;
-        self.deal_damage(attacker, counter);
+        self.deal_damage(Some(defender), attacker, counter);
         let name = defender.name();
         let tgt = attacker.target_name();
         self.log.push(format!("{name} Ripostes {tgt} for {counter} damage [{def_atk} ATK x30% = {base}, rolled {}]", roll.fmt()));
@@ -636,28 +837,28 @@ impl CombatState {
 
         match suit {
             Some(MinorSuit::Swords) | None => {
-                let atk = self.fighter(side).stats.attack;
-                let raw_def = self.fighter(target).stats.defense;
+                let atk = self.effective_atk(side);
+                let raw_def = self.effective_def(target);
                 let def_applied = raw_def * 3 / 4;
                 let dmg_floor = self.fate_effect.damage_floor.unwrap_or(DAMAGE_FLOOR);
                 let base = (atk + val - def_applied).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
                 let dmg = roll.value;
-                self.deal_damage(target, dmg);
+                self.deal_damage(Some(side), target, dmg);
                 self.log.push(format!("{name} uses Backstab on {tgt} for {dmg} damage [{atk} ATK + {val} card - {raw_def} DEF x3/4 = {base}, rolled {}]", roll.fmt()));
             }
             Some(MinorSuit::Cups) => {
                 let base = val * 2;
                 let roll = self.roll_effect(base, HEAL_FLOOR);
-                let f = self.fighter_mut(side);
-                let heal = f.diminished_heal(roll.value);
-                f.current_hp = (f.current_hp + heal).min(f.max_hp);
-                self.log.push(format!("{name} uses Elixir — heals {heal} HP [{val} card x2 = {base}, rolled {}]", roll.fmt()));
+                if self.fate_effect.disable_healing {
+                    self.log.push(format!("{name} uses Elixir — healing disabled (Fate)"));
+                } else {
+                    let heal = self.apply_heal(side, roll.value);
+                    self.log.push(format!("{name} uses Elixir — heals {heal} HP [{val} card x2 = {base}, rolled {}]", roll.fmt()));
+                }
             }
             Some(MinorSuit::Wands) => {
-                self.log.push(format!("{name} uses Haste — all actions this turn!"));
-                self.exhaust(side, CombatAction::Weapon);
-                self.exhaust(side, CombatAction::Apparel);
+                self.log.push(format!("{name} uses Haste — bonus weapon + apparel!"));
                 self.apply_weapon(side, flags);
                 self.apply_apparel(CombatAction::Apparel, side, flags);
             }
@@ -668,9 +869,48 @@ impl CombatState {
         }
     }
 
-    fn deal_damage(&mut self, target: Side, dmg: i32) {
+    fn deal_damage(&mut self, attacker: Option<Side>, target: Side, dmg: i32) {
+        // Star barrier absorbs first hit
+        if self.star_barriers[target.index()] {
+            self.star_barriers[target.index()] = false;
+            let tgt_name = target.name();
+            self.log.push(format!("{tgt_name}'s Star barrier absorbs the hit!"));
+            return;
+        }
+
+        let mut final_dmg = dmg;
+
+        // Death execute: target below threshold takes double
+        if self.fate_effect.execute_threshold_pct > 0 {
+            let f = self.fighter(target);
+            let hp_pct = f.current_hp * 100 / f.max_hp.max(1);
+            if hp_pct <= self.fate_effect.execute_threshold_pct {
+                final_dmg *= 2;
+            }
+        }
+
+        // Judgement: second strike bonus
+        if self.second_strike_active && self.fate_effect.second_strike_bonus_pct != 100 {
+            final_dmg = final_dmg * self.fate_effect.second_strike_bonus_pct / 100;
+        }
+
+        // Apply damage
         let f = self.fighter_mut(target);
-        f.current_hp -= dmg;
-        f.last_damage_taken += dmg;
+        f.current_hp -= final_dmg;
+        f.last_damage_taken += final_dmg;
+
+        // Lovers reflect (no recursion)
+        if let Some(atk_side) = attacker {
+            if self.fate_effect.reflect_damage_pct > 0 {
+                let reflected = final_dmg * self.fate_effect.reflect_damage_pct / 100;
+                if reflected > 0 {
+                    let f = self.fighter_mut(atk_side);
+                    f.current_hp -= reflected;
+                    f.last_damage_taken += reflected;
+                    let name = atk_side.name();
+                    self.log.push(format!("{name} takes {reflected} reflected damage (Lovers)"));
+                }
+            }
+        }
     }
 }

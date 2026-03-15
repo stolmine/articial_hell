@@ -7,6 +7,7 @@ mod game;
 mod ai;
 mod theme;
 mod ui;
+mod sim;
 
 use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -17,6 +18,23 @@ use game::{GameState, GamePhase};
 use combat::CombatAction;
 
 fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--sim") {
+        let num = args.iter().position(|a| a == "-n")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100);
+        let seed = args.iter().position(|a| a == "--seed")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| s.parse().ok());
+        let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
+
+        let config = sim::SimConfig { num_fights: num, seed, verbose };
+        sim::balance_report(&config);
+        return Ok(());
+    }
+
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;

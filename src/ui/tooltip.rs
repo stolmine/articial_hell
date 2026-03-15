@@ -31,7 +31,7 @@ fn court_tooltip(suit: MinorSuit, rank: CourtRank, t: &Theme) -> Vec<Line<'stati
         CourtRank::Queen | CourtRank::King => "Best with same-suit equipment",
     };
 
-    vec![
+    let mut lines = vec![
         Line::from(Span::styled(format!("{rank} of {suit}"), Style::default().fg(t.text).add_modifier(Modifier::BOLD))),
         Line::from(""),
         Line::from(Span::styled(role, Style::default().fg(t.info))),
@@ -43,7 +43,25 @@ fn court_tooltip(suit: MinorSuit, rank: CourtRank, t: &Theme) -> Vec<Line<'stati
         Line::from(Span::styled("Rank Ability", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))),
         Line::from(Span::styled(rank_desc, Style::default().fg(t.text))),
         Line::from(Span::styled(strategy, Style::default().fg(t.muted))),
-    ]
+    ];
+
+    match rank {
+        CourtRank::Knight => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Combat: Wildcard", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled("One random action is doubled each cycle (x2 uses)", Style::default().fg(t.info))));
+            lines.push(Line::from(Span::styled("Skips one other action to compensate", Style::default().fg(t.muted))));
+        }
+        CourtRank::Queen => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Combat: Shapeshifter", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled("Reassign equipment slots each cycle", Style::default().fg(t.info))));
+            lines.push(Line::from(Span::styled("Adapt loadout to counter the opponent", Style::default().fg(t.muted))));
+        }
+        _ => {}
+    }
+
+    lines
 }
 
 fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &PlayerState, t: &Theme) -> Vec<Line<'static>> {
