@@ -23,7 +23,7 @@ pub fn render_card_widget(frame: &mut Frame, area: Rect, card: &TarotCard, index
         TarotCard::Major(arcana) => {
             let art = card_art::arcana_art();
             let name = format!("{arcana}");
-            (theme.arcana, art, name)
+            (theme.fate, art, name)
         }
     };
 

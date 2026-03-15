@@ -1,8 +1,9 @@
 use rand::RngExt;
 use rand_chacha::ChaCha8Rng;
-use crate::card::{CourtRank, MinorSuit, TarotCard};
+use crate::card::{CourtRank, MajorArcana, MinorSuit, TarotCard};
 use crate::stats::{Stats, derive_stats};
-use crate::arcana::{ArcanaEffect, resolve_arcana};
+use crate::fate::{FateEffect, resolve_fate, fate_description};
+use rand::seq::SliceRandom;
 
 const DAMAGE_FLOOR: i32 = 2;
 const HEAL_FLOOR: i32 = 1;
@@ -31,11 +32,9 @@ pub struct Fighter {
     pub weapon: TarotCard,
     pub apparel: TarotCard,
     pub item: TarotCard,
-    pub arcana: TarotCard,
     pub stats: Stats,
     pub current_hp: i32,
     pub max_hp: i32,
-    pub arcana_effect: ArcanaEffect,
     pub heal_count: i32,
     pub last_damage_taken: i32,
 }
@@ -46,17 +45,13 @@ impl Fighter {
         weapon: TarotCard,
         apparel: TarotCard,
         item: TarotCard,
-        arcana_card: TarotCard,
     ) -> Fighter {
         let mut stats = derive_stats(hero, weapon, apparel, item);
-        let arcana = arcana_card.arcana().unwrap();
-        let arcana_effect = resolve_arcana(arcana, hero.suit(), &[weapon, apparel, item]);
-        stats.add(&arcana_effect.stat_bonus);
         stats.hp = stats.hp.max(1);
         let hp = stats.hp;
         Fighter {
-            hero, weapon, apparel, item, arcana: arcana_card, stats,
-            current_hp: hp, max_hp: hp, arcana_effect,
+            hero, weapon, apparel, item, stats,
+            current_hp: hp, max_hp: hp,
             heal_count: 0, last_damage_taken: 0,
         }
     }
@@ -81,12 +76,8 @@ impl Fighter {
         self.apparel = apparel;
         self.item = item;
         let mut stats = derive_stats(self.hero, weapon, apparel, item);
-        let arcana = self.arcana.arcana().unwrap();
-        let effect = resolve_arcana(arcana, self.hero.suit(), &[weapon, apparel, item]);
-        stats.add(&effect.stat_bonus);
         stats.hp = stats.hp.max(1);
         self.stats = stats;
-        self.arcana_effect = effect;
         self.max_hp = stats.hp;
         self.current_hp = ((self.max_hp as f64 * hp_ratio).round() as i32).clamp(1, self.max_hp);
     }
@@ -201,6 +192,9 @@ pub struct CombatState {
     pub combat_over: bool,
     pub player_won: bool,
     pub rng: ChaCha8Rng,
+    pub fate_pool: Vec<MajorArcana>,
+    pub current_fate: Option<MajorArcana>,
+    pub fate_effect: FateEffect,
     // Knight: which action is doubled this cycle (per side), and use counts
     pub knight_doubled: [Option<CombatAction>; 2],
     knight_uses: [[u8; 3]; 2],
@@ -212,8 +206,17 @@ pub struct CombatState {
 impl CombatState {
     pub fn new(player: Fighter, ai: Fighter, mut rng: ChaCha8Rng) -> CombatState {
         let mut log = Vec::new();
-        log.push(format!("Your arcana: {}", player.arcana));
-        log.push(format!("Enemy arcana: {}", ai.arcana));
+
+        // Initialize fate pool with all 22 major arcana, shuffled
+        let mut fate_pool: Vec<MajorArcana> = MajorArcana::ALL.to_vec();
+        fate_pool.shuffle(&mut rng);
+
+        // Draw first fate card
+        let current_fate = fate_pool.pop();
+        let fate_effect = current_fate.map(|a| resolve_fate(a)).unwrap_or_default();
+        if let Some(arcana) = current_fate {
+            log.push(format!("Fate: {} — {}", arcana, fate_description(arcana)));
+        }
         log.push("--- Cycle 1 ---".to_string());
 
         // Store original cards for Queen reassignment
@@ -240,10 +243,19 @@ impl CombatState {
             exhausted: [[false; 3]; 2],
             awaiting_action: true, combat_over: false, player_won: false,
             rng,
+            fate_pool, current_fate, fate_effect,
             knight_doubled,
             knight_uses: [[0; 3]; 2],
             awaiting_queen_reassign: false,
             queen_original_cards,
+        }
+    }
+
+    fn draw_fate(&mut self) {
+        self.current_fate = self.fate_pool.pop();
+        self.fate_effect = self.current_fate.map(|a| resolve_fate(a)).unwrap_or_default();
+        if let Some(arcana) = self.current_fate {
+            self.log.push(format!("Fate: {} — {}", arcana, fate_description(arcana)));
         }
     }
 
@@ -349,6 +361,7 @@ impl CombatState {
         if player_done && ai_done {
             self.cycle += 1;
             self.log.push(format!("--- Cycle {} ---", self.cycle));
+            self.draw_fate();
 
             // Roll new Knight doubles
             for (si, side) in [(0, Side::Player), (1, Side::Ai)] {
@@ -399,15 +412,10 @@ impl CombatState {
         let ai_wands_weapon = self.ai.weapon.suit() == Some(MinorSuit::Wands);
 
         let player_first = {
-            let pa = self.player.arcana_effect.always_first;
-            let aa = self.ai.arcana_effect.always_first;
-            if pa && !aa { true }
-            else if aa && !pa { false }
-            else {
-                let ps = self.player.stats.speed + if player_wands_weapon && player_action == CombatAction::Weapon { 999 } else { 0 };
-                let as_ = self.ai.stats.speed + if ai_wands_weapon && ai_action == CombatAction::Weapon { 999 } else { 0 };
-                ps >= as_
-            }
+            let reverse = self.fate_effect.reverse_initiative;
+            let ps = self.player.stats.speed + if player_wands_weapon && player_action == CombatAction::Weapon { 999 } else { 0 };
+            let as_ = self.ai.stats.speed + if ai_wands_weapon && ai_action == CombatAction::Weapon { 999 } else { 0 };
+            if reverse { ps <= as_ } else { ps >= as_ }
         };
 
         self.exhaust(Side::Player, player_action);
@@ -428,34 +436,29 @@ impl CombatState {
             }
         }
 
-        for side in [Side::Player, Side::Ai] {
-            let f = self.fighter(side);
-            if f.arcana_effect.heal_per_turn > 0 && f.current_hp > 0 {
-                let base = f.arcana_effect.heal_per_turn;
-                let roll = self.roll_effect(base, HEAL_FLOOR);
-                let f = self.fighter_mut(side);
-                let h = f.diminished_heal(roll.value);
-                f.current_hp = (f.current_hp + h).min(f.max_hp);
-                let name = side.name();
-                let verb = match side { Side::Player => "regenerate", Side::Ai => "regenerates" };
-                self.log.push(format!("{name} {verb} {h} HP (Temperance) [base {base}, rolled {}]", roll.fmt()));
+        if self.fate_effect.heal_per_turn > 0 {
+            for side in [Side::Player, Side::Ai] {
+                let f = self.fighter(side);
+                if f.current_hp > 0 {
+                    let base = self.fate_effect.heal_per_turn;
+                    let floor = self.fate_effect.damage_floor.unwrap_or(HEAL_FLOOR);
+                    let roll = self.roll_effect(base, floor);
+                    let f = self.fighter_mut(side);
+                    let h = f.diminished_heal(roll.value);
+                    f.current_hp = (f.current_hp + h).min(f.max_hp);
+                    let name = side.name();
+                    let verb = match side { Side::Player => "regenerate", Side::Ai => "regenerates" };
+                    self.log.push(format!("{name} {verb} {h} HP (Fate) [base {base}, rolled {}]", roll.fmt()));
+                }
             }
         }
 
         if self.player.current_hp <= 0 {
             self.combat_over = true;
             self.player_won = false;
-            if self.ai.arcana_effect.death_curse {
-                self.ai.current_hp = 1;
-                self.log.push("Death curse: enemy carries 1 HP to next round.".to_string());
-            }
         } else if self.ai.current_hp <= 0 {
             self.combat_over = true;
             self.player_won = true;
-            if self.player.arcana_effect.death_curse {
-                self.player.current_hp = 1;
-                self.log.push("Death curse: you carry 1 HP to next round.".to_string());
-            }
         }
 
         if !self.combat_over {
@@ -469,7 +472,7 @@ impl CombatState {
     fn def_breakdown(&self, side: Side, flags: &TurnFlags) -> (i32, String) {
         let f = self.fighter(side);
         let ff = flags.get(side);
-        let raw = f.stats.defense;
+        let raw = f.stats.defense * self.fate_effect.defense_multiplier_pct / 100;
         let spd = f.stats.speed;
 
         if ff.fortify {
@@ -548,38 +551,36 @@ impl CombatState {
         let f = self.fighter(side);
         let atk = f.stats.attack;
         let suit = f.weapon.suit();
-        let chariot = f.arcana_effect.first_hit_double;
         let target = side.opponent();
         let (def, def_str) = self.def_breakdown(target, flags);
         let barrier = flags.get(target).barrier;
         let name = side.name();
         let tgt = target.target_name();
+        let dmg_floor = self.fate_effect.damage_floor.unwrap_or(DAMAGE_FLOOR);
+        let dmg_bonus = self.fate_effect.damage_bonus;
+        let dmg_mult = self.fate_effect.damage_multiplier_pct;
 
         if barrier {
             self.log.push(format!("{name} attacks but the Barrier blocks all damage!"));
             return;
         }
 
-        let first_turn = self.turn == 1;
-
         match suit {
             Some(MinorSuit::Swords) | None => {
-                let base = (atk - def).max(DAMAGE_FLOOR);
-                let roll = self.roll_effect(base, DAMAGE_FLOOR);
-                let mut dmg = roll.value;
-                let mut detail = format!("{atk} ATK - {def_str} = {base}, rolled {}", roll.fmt());
-                if chariot && first_turn { dmg *= 2; detail = format!("{detail}, x2 Chariot"); }
+                let base = (atk + dmg_bonus - def).max(dmg_floor);
+                let roll = self.roll_effect(base, dmg_floor);
+                let dmg = roll.value * dmg_mult / 100;
+                let detail = format!("{atk} ATK - {def_str} = {base}, rolled {}", roll.fmt());
                 self.deal_damage(target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Strike on {tgt} for {dmg} damage [{detail}]"));
             }
             Some(MinorSuit::Cups) => {
                 let raw = atk * 60 / 100;
-                let base = (raw - def).max(DAMAGE_FLOOR);
-                let roll = self.roll_effect(base, DAMAGE_FLOOR);
-                let mut dmg = roll.value;
-                let mut detail = format!("{atk} ATK x60% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
-                if chariot && first_turn { dmg *= 2; detail = format!("{detail}, x2 Chariot"); }
+                let base = (raw + dmg_bonus - def).max(dmg_floor);
+                let roll = self.roll_effect(base, dmg_floor);
+                let dmg = roll.value * dmg_mult / 100;
+                let detail = format!("{atk} ATK x60% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
                 self.deal_damage(target, dmg);
                 self.riposte_check(side, flags);
                 let heal_roll = self.roll_effect(dmg, HEAL_FLOOR);
@@ -590,11 +591,10 @@ impl CombatState {
             }
             Some(MinorSuit::Wands) => {
                 let raw = atk * 70 / 100;
-                let base = (raw - def).max(DAMAGE_FLOOR);
-                let roll = self.roll_effect(base, DAMAGE_FLOOR);
-                let mut dmg = roll.value;
-                let mut detail = format!("{atk} ATK x70% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
-                if chariot && first_turn { dmg *= 2; detail = format!("{detail}, x2 Chariot"); }
+                let base = (raw + dmg_bonus - def).max(dmg_floor);
+                let roll = self.roll_effect(base, dmg_floor);
+                let dmg = roll.value * dmg_mult / 100;
+                let detail = format!("{atk} ATK x70% = {raw} - {def_str} = {base}, rolled {}", roll.fmt());
                 self.deal_damage(target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Quick Strike on {tgt} for {dmg} damage [{detail}]"));
@@ -602,11 +602,10 @@ impl CombatState {
             Some(MinorSuit::Pentacles) => {
                 let raw_atk = atk * 120 / 100;
                 let half_def = def / 2;
-                let base = (raw_atk - half_def).max(DAMAGE_FLOOR);
-                let roll = self.roll_effect(base, DAMAGE_FLOOR);
-                let mut dmg = roll.value;
-                let mut detail = format!("{atk} ATK x120% = {raw_atk} - {def_str}/2 = {base}, rolled {}", roll.fmt());
-                if chariot && first_turn { dmg *= 2; detail = format!("{detail}, x2 Chariot"); }
+                let base = (raw_atk + dmg_bonus - half_def).max(dmg_floor);
+                let roll = self.roll_effect(base, dmg_floor);
+                let dmg = roll.value * dmg_mult / 100;
+                let detail = format!("{atk} ATK x120% = {raw_atk} - {def_str}/2 = {base}, rolled {}", roll.fmt());
                 self.deal_damage(target, dmg);
                 self.riposte_check(side, flags);
                 self.log.push(format!("{name} uses Heavy Blow on {tgt} for {dmg} damage [{detail}]"));
@@ -640,8 +639,9 @@ impl CombatState {
                 let atk = self.fighter(side).stats.attack;
                 let raw_def = self.fighter(target).stats.defense;
                 let def_applied = raw_def * 3 / 4;
-                let base = (atk + val - def_applied).max(DAMAGE_FLOOR);
-                let roll = self.roll_effect(base, DAMAGE_FLOOR);
+                let dmg_floor = self.fate_effect.damage_floor.unwrap_or(DAMAGE_FLOOR);
+                let base = (atk + val - def_applied).max(dmg_floor);
+                let roll = self.roll_effect(base, dmg_floor);
                 let dmg = roll.value;
                 self.deal_damage(target, dmg);
                 self.log.push(format!("{name} uses Backstab on {tgt} for {dmg} damage [{atk} ATK + {val} card - {raw_def} DEF x3/4 = {base}, rolled {}]", roll.fmt()));

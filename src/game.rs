@@ -14,7 +14,6 @@ pub enum DraftStep {
     PickWeapon,
     PickApparel,
     PickItem,
-    PickArcana,
 }
 
 #[derive(Clone, Debug)]
@@ -23,12 +22,11 @@ pub struct PlayerState {
     pub weapon: Option<TarotCard>,
     pub apparel: Option<TarotCard>,
     pub item: Option<TarotCard>,
-    pub arcana: Option<TarotCard>,
 }
 
 impl PlayerState {
     pub fn new() -> Self {
-        Self { hero: None, weapon: None, apparel: None, item: None, arcana: None }
+        Self { hero: None, weapon: None, apparel: None, item: None }
     }
 
     pub fn set_slot(&mut self, step: &DraftStep, card: TarotCard) {
@@ -37,7 +35,6 @@ impl PlayerState {
             DraftStep::PickWeapon => self.weapon = Some(card),
             DraftStep::PickApparel => self.apparel = Some(card),
             DraftStep::PickItem => self.item = Some(card),
-            DraftStep::PickArcana => self.arcana = Some(card),
         }
     }
 }
@@ -175,23 +172,12 @@ impl GameState {
             DraftStep::PickHero => Some(DraftStep::PickWeapon),
             DraftStep::PickWeapon => Some(DraftStep::PickApparel),
             DraftStep::PickApparel => Some(DraftStep::PickItem),
-            DraftStep::PickItem => Some(DraftStep::PickArcana),
-            DraftStep::PickArcana => None,
+            DraftStep::PickItem => None,
         };
 
         self.cursor = 0;
         match next_step {
             None => self.start_combat(),
-            Some(DraftStep::PickArcana) => {
-                let choices = self.player_deck.draw_arcana(4);
-                let ai_choices = self.ai_deck.draw_arcana(4);
-                self.message = "Pick your Arcana.".to_string();
-                self.phase = GamePhase::Draft {
-                    step: DraftStep::PickArcana,
-                    choices,
-                    ai_choices,
-                };
-            }
             Some(step) => {
                 let label = match &step {
                     DraftStep::PickWeapon => "Pick your Weapon.",
@@ -213,14 +199,12 @@ impl GameState {
             self.player.weapon.unwrap(),
             self.player.apparel.unwrap(),
             self.player.item.unwrap(),
-            self.player.arcana.unwrap(),
         );
         let ai_fighter = Fighter::new(
             self.ai_state.hero.unwrap(),
             self.ai_state.weapon.unwrap(),
             self.ai_state.apparel.unwrap(),
             self.ai_state.item.unwrap(),
-            self.ai_state.arcana.unwrap(),
         );
         let combat_rng = ChaCha8Rng::from_rng(&mut self.rng);
         self.combat = Some(CombatState::new(player_fighter, ai_fighter, combat_rng));

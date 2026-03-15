@@ -66,9 +66,6 @@ pub fn draft_pick(
             // Random hero pick — personality doesn't exist yet
             rng.random_range(0..choices.len())
         }
-        DraftStep::PickArcana => {
-            pick_arcana(choices, personality, rng)
-        }
         _ => {
             pick_equipment(choices, step, ai_state, personality, rng)
         }
@@ -182,57 +179,6 @@ fn pick_equipment(
     let delta_pers = stat_delta_for_pick(hero, step, choices[personality_pick], current_weapon, current_apparel, current_item);
 
     if delta_best - delta_pers >= 5 { raw_best } else { personality_pick }
-}
-
-fn pick_arcana(
-    choices: &[TarotCard],
-    personality: Option<&AiPersonality>,
-    _rng: &mut ChaCha8Rng,
-) -> usize {
-    let pers = match personality {
-        Some(p) => p,
-        None => return 0,
-    };
-
-    let scores: Vec<f32> = choices.iter().map(|card| {
-        let arcana = match card.arcana() {
-            Some(a) => a,
-            None => return 0.0,
-        };
-
-        // Use a dummy hero suit and empty equipment for evaluation
-        let effect = crate::arcana::resolve_arcana(arcana, Some(pers.hero_suit), &[
-            TarotCard::Numbered { suit: pers.hero_suit, value: 5 },
-            TarotCard::Numbered { suit: pers.hero_suit, value: 5 },
-            TarotCard::Numbered { suit: pers.hero_suit, value: 5 },
-        ]);
-        let s = &effect.stat_bonus;
-
-        // Weighted stat value based on aggression
-        let atk_weight = 1.0 + pers.aggression * 0.5;
-        let def_weight = 1.0 - pers.aggression * 0.5;
-        let hp_weight = 1.0 - pers.aggression * 0.3;
-        let spd_weight = 1.0 + pers.aggression * 0.3;
-
-        let stat_score = s.attack as f32 * atk_weight
-            + s.defense as f32 * def_weight
-            + s.hp as f32 * hp_weight
-            + s.speed as f32 * spd_weight;
-
-        // Special ability bonuses
-        let special = if effect.always_first { 5.0 } else { 0.0 }
-            + if effect.first_hit_double { 4.0 * (1.0 + pers.aggression * 0.3) } else { 0.0 }
-            + if effect.heal_per_turn > 0 { effect.heal_per_turn as f32 * 2.0 * (1.0 - pers.aggression * 0.3) } else { 0.0 }
-            + if effect.death_curse { 3.0 } else { 0.0 };
-
-        stat_score + special
-    }).collect();
-
-    scores.iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(i, _)| i)
-        .unwrap_or(0)
 }
 
 pub fn combat_pick(

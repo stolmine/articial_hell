@@ -1,6 +1,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use crate::game::{GameState, QUEEN_PERMUTATIONS, MAX_FIGHTS};
+use crate::fate::fate_description;
 use crate::combat::Fighter;
 use crate::stats::derive_stats;
 use crate::theme::Theme;
@@ -22,9 +23,12 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
     ])
     .areas(area);
 
+    let fate_str = combat.current_fate
+        .map(|a| format!(" — Fate: {}", fate_description(a)))
+        .unwrap_or_default();
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("ARTICIAL HELL — Fight {}/{} — Cycle {}", game.fight, MAX_FIGHTS, combat.cycle),
+            format!("ARTICIAL HELL — Fight {}/{} — Cycle {}{}", game.fight, MAX_FIGHTS, combat.cycle, fate_str),
             Style::default().fg(t.heading).add_modifier(Modifier::BOLD),
         )).centered())
         .block(Block::bordered()),
@@ -133,7 +137,7 @@ fn render_fighter(frame: &mut Frame, area: Rect, fighter: &Fighter, label: &str,
         Style::default().fg(t.muted),
     )));
     lines.push(Line::from(Span::styled(
-        format!("Itm: {}  Arc: {}", fighter.item, fighter.arcana),
+        format!("Itm: {}", fighter.item),
         Style::default().fg(t.muted),
     )));
 

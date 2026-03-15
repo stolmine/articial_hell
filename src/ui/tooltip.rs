@@ -1,15 +1,14 @@
 use ratatui::prelude::*;
-use crate::card::{TarotCard, MinorSuit, CourtRank, MajorArcana};
+use crate::card::{TarotCard, MinorSuit, CourtRank};
 use crate::game::{DraftStep, PlayerState};
 use crate::stats::{hero_base_stats, equipment_primary, equipment_secondary, EquipSlot};
-use crate::arcana::arcana_description;
 use crate::theme::Theme;
 
 pub fn card_tooltip<'a>(card: &TarotCard, step: &DraftStep, player: &PlayerState, t: &Theme) -> Vec<Line<'a>> {
     match card {
         TarotCard::Court { suit, rank } => court_tooltip(*suit, *rank, t),
         TarotCard::Numbered { suit, value } => numbered_tooltip(*suit, *value, step, player, t),
-        TarotCard::Major(arcana) => arcana_tooltip(*arcana, t),
+        TarotCard::Major(_) => vec![],
     }
 }
 
@@ -142,14 +141,4 @@ fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &Playe
     }
 
     lines
-}
-
-fn arcana_tooltip(arcana: MajorArcana, t: &Theme) -> Vec<Line<'static>> {
-    let desc = arcana_description(arcana);
-    vec![
-        Line::from(Span::styled(format!("{arcana}"), Style::default().fg(t.arcana).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-        Line::from(Span::styled("Effect:", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled(desc.to_string(), Style::default().fg(t.info))),
-    ]
 }

@@ -2,7 +2,7 @@ mod card;
 mod deck;
 mod stats;
 mod combat;
-mod arcana;
+mod fate;
 mod game;
 mod ai;
 mod theme;

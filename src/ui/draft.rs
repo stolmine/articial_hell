@@ -3,7 +3,6 @@ use ratatui::widgets::*;
 use crate::card::TarotCard;
 use crate::game::{GamePhase, GameState, DraftStep, PlayerState};
 use crate::stats::{partial_derive, Stats};
-use crate::arcana;
 use crate::theme::Theme;
 use super::{widgets, tooltip};
 
@@ -18,19 +17,6 @@ fn prospective_stats(player: &PlayerState, step: &DraftStep, card: TarotCard) ->
         DraftStep::PickWeapon => p.weapon = Some(card),
         DraftStep::PickApparel => p.apparel = Some(card),
         DraftStep::PickItem => p.item = Some(card),
-        DraftStep::PickArcana => {
-            let mut s = current_stats(&p);
-            if let Some(a) = card.arcana() {
-                let equip = [
-                    p.weapon.unwrap_or(TarotCard::Numbered { suit: crate::card::MinorSuit::Swords, value: 1 }),
-                    p.apparel.unwrap_or(TarotCard::Numbered { suit: crate::card::MinorSuit::Swords, value: 1 }),
-                    p.item.unwrap_or(TarotCard::Numbered { suit: crate::card::MinorSuit::Swords, value: 1 }),
-                ];
-                let effect = arcana::resolve_arcana(a, p.hero.and_then(|h| h.suit()), &equip);
-                s.add(&effect.stat_bonus);
-            }
-            return s;
-        }
     }
     partial_derive(p.hero, p.weapon, p.apparel, p.item)
 }
@@ -78,7 +64,6 @@ pub fn render_draft(frame: &mut Frame, game: &GameState) {
         DraftStep::PickWeapon => "Weapon",
         DraftStep::PickApparel => "Apparel",
         DraftStep::PickItem => "Item",
-        DraftStep::PickArcana => "Arcana",
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -205,7 +190,6 @@ fn opponent_summary<'a>(game: &GameState, step: &DraftStep, t: &Theme) -> Vec<Li
             game.ai_state.weapon.map(|c| c.to_string()).unwrap_or_else(|| "???".into()),
             game.ai_state.apparel.map(|c| c.to_string()).unwrap_or_else(|| "???".into()),
         ),
-        DraftStep::PickArcana => "Arcana — hidden".to_string(),
     };
     lines.push(Line::from(Span::styled(opp, Style::default().fg(t.muted))));
     lines
@@ -220,7 +204,6 @@ fn picks_summary<'a>(game: &GameState, step: &DraftStep, t: &Theme) -> Vec<Line<
         ("Wpn ", game.player.weapon, DraftStep::PickWeapon),
         ("App ", game.player.apparel, DraftStep::PickApparel),
         ("Itm ", game.player.item, DraftStep::PickItem),
-        ("Arc ", game.player.arcana, DraftStep::PickArcana),
     ];
 
     for (label, pick, slot_step) in slots {
@@ -255,7 +238,6 @@ pub fn render_draft_reveal(frame: &mut Frame, game: &GameState) {
         DraftStep::PickWeapon => "Weapon",
         DraftStep::PickApparel => "Apparel",
         DraftStep::PickItem => "Item",
-        DraftStep::PickArcana => "Arcana",
     };
 
     let player_pick = match step {
@@ -263,14 +245,12 @@ pub fn render_draft_reveal(frame: &mut Frame, game: &GameState) {
         DraftStep::PickWeapon  => game.player.weapon,
         DraftStep::PickApparel => game.player.apparel,
         DraftStep::PickItem    => game.player.item,
-        DraftStep::PickArcana  => game.player.arcana,
     };
     let ai_pick = match step {
         DraftStep::PickHero    => game.ai_state.hero,
         DraftStep::PickWeapon  => game.ai_state.weapon,
         DraftStep::PickApparel => game.ai_state.apparel,
         DraftStep::PickItem    => game.ai_state.item,
-        DraftStep::PickArcana  => game.ai_state.arcana,
     };
 
     let area = frame.area();
