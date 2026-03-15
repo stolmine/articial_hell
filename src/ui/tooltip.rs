@@ -94,7 +94,7 @@ fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &Playe
 
     let action = match (slot, suit) {
         (EquipSlot::Weapon, MinorSuit::Swords) => "Strike: deal full ATK damage",
-        (EquipSlot::Weapon, MinorSuit::Cups) => "Drain: deal 60% ATK, heal for damage dealt",
+        (EquipSlot::Weapon, MinorSuit::Cups) => "Drain: deal 70% ATK, heal for damage dealt",
         (EquipSlot::Weapon, MinorSuit::Wands) => "Quick Strike: deal 70% ATK, always act first",
         (EquipSlot::Weapon, MinorSuit::Pentacles) => "Heavy Blow: deal 120% ATK, halve enemy DEF",
         (EquipSlot::Apparel, MinorSuit::Swords) => "Riposte: +50% DEF this turn, counter 30% ATK",

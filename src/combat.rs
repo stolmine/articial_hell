@@ -8,6 +8,28 @@ use rand::seq::SliceRandom;
 const DAMAGE_FLOOR: i32 = 2;
 const HEAL_FLOOR: i32 = 1;
 
+#[derive(Clone, Copy, Debug)]
+pub struct BalanceTweaks {
+    /// Passive thorns: when hit, reflect DEF * thorns_pct / 100 back to attacker
+    pub thorns_pct: i32,
+    /// Cycle escalation: +N damage per cycle to all attacks
+    pub cycle_damage_bonus: i32,
+    /// HP ratio bonus: fighters deal bonus damage = (current_hp_pct - 50) * hp_ratio_scale / 100
+    /// Positive when above 50% HP, negative below (clamped to 0 min)
+    pub hp_ratio_scale: i32,
+    /// HP bulk bonus: +1 damage per hp_bulk_per HP above hp_bulk_threshold
+    /// Rewards high max_hp builds (Cups niche)
+    pub hp_bulk_threshold: i32,
+    pub hp_bulk_per: i32,
+}
+
+impl Default for BalanceTweaks {
+    fn default() -> Self {
+        Self { thorns_pct: 12, cycle_damage_bonus: 0, hp_ratio_scale: 0,
+               hp_bulk_threshold: 20, hp_bulk_per: 6 }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side { Player, Ai }
 
@@ -57,7 +79,7 @@ impl Fighter {
     }
 
     pub fn diminished_heal(&mut self, base_amount: i32) -> i32 {
-        let effective = base_amount * 100 / (100 + self.heal_count * 25);
+        let effective = base_amount * 100 / (100 + self.heal_count * 15);
         self.heal_count += 1;
         effective.max(0)
     }
@@ -208,10 +230,15 @@ pub struct CombatState {
     second_strike_active: bool,
     applied_flat_bonus: i32,
     items_swapped: bool,
+    pub tweaks: BalanceTweaks,
 }
 
 impl CombatState {
-    pub fn new(player: Fighter, ai: Fighter, mut rng: ChaCha8Rng) -> CombatState {
+    pub fn new(player: Fighter, ai: Fighter, rng: ChaCha8Rng) -> CombatState {
+        Self::new_with_tweaks(player, ai, rng, BalanceTweaks::default())
+    }
+
+    pub fn new_with_tweaks(player: Fighter, ai: Fighter, mut rng: ChaCha8Rng, tweaks: BalanceTweaks) -> CombatState {
         let mut log = Vec::new();
 
         // Initialize fate pool with all 22 major arcana, shuffled
@@ -267,6 +294,7 @@ impl CombatState {
             second_strike_active: false,
             applied_flat_bonus: 0,
             items_swapped: false,
+            tweaks,
         };
 
         // Apply World bonus
@@ -768,11 +796,11 @@ impl CombatState {
                 self.log.push(format!("{name} uses Strike on {tgt} for {dmg} damage [{detail}]"));
             }
             Some(MinorSuit::Cups) => {
-                let raw = atk * 60 / 100;
+                let raw = atk * 70 / 100;
                 let base = (raw + dmg_bonus - def).max(dmg_floor);
                 let roll = self.roll_effect(base, dmg_floor);
                 let dmg = calc_final_dmg(roll.value);
-                let detail = format!("{atk} ATK x60% = {raw}{bonus_str} - {def_str} = {base}, rolled {}{fate_suffix}", roll.fmt());
+                let detail = format!("{atk} ATK x70% = {raw}{bonus_str} - {def_str} = {base}, rolled {}{fate_suffix}", roll.fmt());
                 self.deal_damage(Some(side), target, dmg);
                 self.riposte_check(side, flags);
                 if self.fate_effect.disable_healing {
@@ -880,6 +908,34 @@ impl CombatState {
 
         let mut final_dmg = dmg;
 
+        // Cycle escalation tweak
+        if self.tweaks.cycle_damage_bonus > 0 {
+            final_dmg += self.tweaks.cycle_damage_bonus * (self.cycle as i32 - 1);
+        }
+
+        // HP bulk bonus tweak: attackers with high max HP deal bonus damage
+        if let Some(atk_side) = attacker {
+            if self.tweaks.hp_bulk_per > 0 && self.tweaks.hp_bulk_threshold > 0 {
+                let f = self.fighter(atk_side);
+                let excess = f.max_hp - self.tweaks.hp_bulk_threshold;
+                if excess > 0 {
+                    final_dmg += excess / self.tweaks.hp_bulk_per;
+                }
+            }
+        }
+
+        // HP ratio bonus tweak: attacker above 50% HP deals more
+        if let Some(atk_side) = attacker {
+            if self.tweaks.hp_ratio_scale > 0 {
+                let f = self.fighter(atk_side);
+                let hp_pct = f.current_hp * 100 / f.max_hp.max(1);
+                let bonus = (hp_pct - 50) * self.tweaks.hp_ratio_scale / 100;
+                if bonus > 0 {
+                    final_dmg += bonus;
+                }
+            }
+        }
+
         // Death execute: target below threshold takes double
         if self.fate_effect.execute_threshold_pct > 0 {
             let f = self.fighter(target);
@@ -898,6 +954,18 @@ impl CombatState {
         let f = self.fighter_mut(target);
         f.current_hp -= final_dmg;
         f.last_damage_taken += final_dmg;
+
+        // Passive thorns tweak: target reflects DEF% back
+        if let Some(atk_side) = attacker {
+            let thorns_pct = self.tweaks.thorns_pct;
+            let target_def = self.effective_def(target);
+            if thorns_pct > 0 && target_def > 0 {
+                let thorns = (target_def * thorns_pct / 100).max(1);
+                let f = self.fighter_mut(atk_side);
+                f.current_hp -= thorns;
+                f.last_damage_taken += thorns;
+            }
+        }
 
         // Lovers reflect (no recursion)
         if let Some(atk_side) = attacker {

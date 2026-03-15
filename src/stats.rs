@@ -26,10 +26,10 @@ impl Stats {
 
 pub fn hero_base_stats(suit: MinorSuit) -> Stats {
     match suit {
-        MinorSuit::Swords => Stats { attack: 8, speed: 5, hp: 14, defense: 3 },
+        MinorSuit::Swords => Stats { attack: 7, speed: 5, hp: 14, defense: 3 },
         MinorSuit::Wands => Stats { attack: 4, speed: 8, hp: 14, defense: 4 },
-        MinorSuit::Cups => Stats { attack: 4, speed: 4, hp: 20, defense: 2 },
-        MinorSuit::Pentacles => Stats { attack: 3, speed: 3, hp: 14, defense: 10 },
+        MinorSuit::Cups => Stats { attack: 4, speed: 4, hp: 24, defense: 2 },
+        MinorSuit::Pentacles => Stats { attack: 3, speed: 3, hp: 14, defense: 12 },
     }
 }
 
@@ -74,9 +74,9 @@ pub fn rank_bonus(hero_rank: CourtRank, hero_suit: MinorSuit, equipment: &[Tarot
         .count() as i32;
 
     let bonus = match hero_rank {
-        CourtRank::Page => unique_suits * 3,
+        CourtRank::Page => unique_suits * 2,
         CourtRank::Knight => unique_suits * 2,
-        CourtRank::Queen => matching_suits * 2,
+        CourtRank::Queen => matching_suits * 3,
         CourtRank::King => matching_suits * 3,
     };
 

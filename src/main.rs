@@ -29,8 +29,12 @@ fn main() -> io::Result<()> {
             .and_then(|i| args.get(i + 1))
             .and_then(|s| s.parse().ok());
         let verbose = args.iter().any(|a| a == "-v" || a == "--verbose");
+        let compare = args.iter().any(|a| a == "--compare");
 
-        let config = sim::SimConfig { num_fights: num, seed, verbose };
+        let config = sim::SimConfig {
+            num_fights: num, seed, verbose, compare,
+            tweaks: combat::BalanceTweaks::default(),
+        };
         sim::balance_report(&config);
         return Ok(());
     }
