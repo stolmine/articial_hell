@@ -1,252 +1,274 @@
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use crate::card::TarotCard;
+use crate::deck::TarotDeck;
+use crate::combat::{CombatState, CombatAction, Fighter, Side};
+use crate::theme::Theme;
+use crate::ai::{self, AiPersonality};
 
-use crate::card::Card;
-use crate::deck::Deck;
+pub const MAX_FIGHTS: usize = 10;
 
-#[derive(Debug, Clone)]
-pub struct WeaponState {
-    pub card: Card,
-    pub bound_to: Option<u8>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DraftStep {
+    PickHero,
+    PickWeapon,
+    PickApparel,
+    PickItem,
+    PickArcana,
 }
 
-impl WeaponState {
-    fn can_fight(&self, monster_value: u8) -> bool {
-        match self.bound_to {
-            None => true,
-            Some(bound) => bound >= monster_value,
+#[derive(Clone, Debug)]
+pub struct PlayerState {
+    pub hero: Option<TarotCard>,
+    pub weapon: Option<TarotCard>,
+    pub apparel: Option<TarotCard>,
+    pub item: Option<TarotCard>,
+    pub arcana: Option<TarotCard>,
+}
+
+impl PlayerState {
+    pub fn new() -> Self {
+        Self { hero: None, weapon: None, apparel: None, item: None, arcana: None }
+    }
+
+    pub fn set_slot(&mut self, step: &DraftStep, card: TarotCard) {
+        match step {
+            DraftStep::PickHero => self.hero = Some(card),
+            DraftStep::PickWeapon => self.weapon = Some(card),
+            DraftStep::PickApparel => self.apparel = Some(card),
+            DraftStep::PickItem => self.item = Some(card),
+            DraftStep::PickArcana => self.arcana = Some(card),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum GamePhase {
     Title,
-    Playing,
-    Won,
-    Dead,
+    Draft {
+        step: DraftStep,
+        choices: Vec<TarotCard>,
+        ai_choices: Vec<TarotCard>,
+    },
+    DraftReveal {
+        step: DraftStep,
+    },
+    Combat,
+    GameOver {
+        victory: bool,
+    },
 }
 
-#[derive(Debug)]
 pub struct GameState {
-    pub hp: u32,
-    pub max_hp: u32,
-    pub deck: Deck,
-    pub room: Vec<Option<Card>>,
-    pub held_card: Option<Card>,
-    pub weapon: Option<WeaponState>,
-    pub used_potion_this_room: bool,
-    pub can_run: bool,
     pub phase: GamePhase,
-    pub cards_resolved: u8,
-    pub room_size: usize,
+    pub player: PlayerState,
+    pub ai_state: PlayerState,
+    pub player_deck: TarotDeck,
+    pub ai_deck: TarotDeck,
+    pub combat: Option<CombatState>,
+    pub fight: usize,
+    pub fights_won: u8,
     pub message: String,
+    pub cursor: usize,
+    pub theme: Theme,
+    pub ai_personality: Option<AiPersonality>,
     rng: ChaCha8Rng,
 }
 
 impl GameState {
     pub fn new_title() -> Self {
         Self {
-            hp: 20,
-            max_hp: 20,
-            deck: Deck::new_scoundrel(),
-            room: vec![None; 4],
-            held_card: None,
-            weapon: None,
-            used_potion_this_room: false,
-            can_run: true,
-            phase: GamePhase::Title,
-            cards_resolved: 0,
-            room_size: 0,
+            phase: GamePhase::Title, player: PlayerState::new(), ai_state: PlayerState::new(),
+            player_deck: TarotDeck::new(), ai_deck: TarotDeck::new(),
+            combat: None, fight: 1, fights_won: 0,
             message: String::new(),
+            cursor: 0, theme: crate::theme::detect_theme(),
+            ai_personality: None,
             rng: ChaCha8Rng::from_rng(&mut rand::rng()),
         }
     }
 
     pub fn new_game() -> Self {
         let mut rng = ChaCha8Rng::from_rng(&mut rand::rng());
-        let mut deck = Deck::new_scoundrel();
-        deck.shuffle(&mut rng);
-
         let mut state = Self {
-            hp: 20u32,
-            max_hp: 20u32,
-            deck,
-            room: vec![None; 4],
-            held_card: None,
-            weapon: None,
-            used_potion_this_room: false,
-            can_run: true,
-            phase: GamePhase::Playing,
-            cards_resolved: 0,
-            room_size: 0,
+            phase: GamePhase::Title, player: PlayerState::new(), ai_state: PlayerState::new(),
+            player_deck: TarotDeck::new(), ai_deck: TarotDeck::new(),
+            combat: None, fight: 1, fights_won: 0,
             message: String::new(),
-            rng,
+            cursor: 0, theme: crate::theme::detect_theme(),
+            ai_personality: None, rng,
         };
-
-        state.deal_room();
+        state.start_fight();
         state
     }
 
-    pub fn deal_room(&mut self) {
-        self.used_potion_this_room = false;
-        self.cards_resolved = 0;
-        self.room = vec![None; 4];
+    fn start_fight(&mut self) {
+        self.player = PlayerState::new();
+        self.ai_state = PlayerState::new();
+        self.combat = None;
+        self.ai_personality = None;
 
-        let held = self.held_card.take();
-        let need = if held.is_some() { 3 } else { 4 };
-        let available = self.deck.remaining().min(need);
-        let mut drawn = self.deck.draw(available);
+        // Fresh decks each fight
+        self.player_deck = TarotDeck::new();
+        self.ai_deck = TarotDeck::new();
+        self.player_deck.shuffle_all(&mut self.rng);
+        self.ai_deck.shuffle_all(&mut self.rng);
 
-        let mut dealt: Vec<Card> = Vec::new();
-        if let Some(h) = held {
-            dealt.push(h);
-        }
-        dealt.append(&mut drawn);
-
-        self.room_size = dealt.len();
-        for (i, card) in dealt.into_iter().enumerate() {
-            self.room[i] = Some(card);
-        }
+        let choices = self.player_deck.draw_court(4);
+        let ai_choices = self.ai_deck.draw_court(4);
+        self.phase = GamePhase::Draft {
+            step: DraftStep::PickHero,
+            choices,
+            ai_choices,
+        };
+        self.message = format!("Fight {}/{} — Draft your Hero.", self.fight, MAX_FIGHTS);
     }
 
-    pub fn resolve_card(&mut self, index: usize) {
-        if self.phase != GamePhase::Playing {
-            return;
-        }
-        if index > 3 || self.room[index].is_none() {
-            return;
-        }
+    pub fn move_cursor(&mut self, delta: i32) {
+        let max = match &self.phase {
+            GamePhase::Draft { choices, .. } => choices.len(),
+            _ => return,
+        };
+        if max == 0 { return; }
+        self.cursor = ((self.cursor as i32 + delta).rem_euclid(max as i32)) as usize;
+    }
 
-        let remaining_count = self.room.iter().filter(|s| s.is_some()).count();
-        let is_final_room = self.deck.is_empty() && self.held_card.is_none();
-
-        if !is_final_room && remaining_count == 1 {
-            self.message = "That card must be held for the next room.".to_string();
-            return;
-        }
-
-        let card = match self.room[index].take() {
-            Some(c) => c,
-            None => return,
+    pub fn draft_pick(&mut self, index: usize) {
+        let (step, choices, ai_choices) = match &self.phase {
+            GamePhase::Draft { step, choices, ai_choices } => {
+                (step.clone(), choices.clone(), ai_choices.clone())
+            }
+            _ => return,
         };
 
-        if card.is_potion() && self.used_potion_this_room {
-            self.room[index] = Some(card);
-            self.message = "Already used a potion this room!".to_string();
+        if index >= choices.len() {
             return;
         }
 
-        if card.is_monster() {
-            self.fight(card);
-        } else if card.is_weapon() {
-            self.equip_weapon(card);
-        } else if card.is_potion() {
-            self.use_potion(card);
+        let card = choices[index];
+        self.player.set_slot(&step, card);
+
+        let ai_idx = ai::draft_pick(&ai_choices, &step, &self.ai_state, self.ai_personality.as_ref(), &mut self.rng);
+        let ai_card = ai_choices[ai_idx];
+        self.ai_state.set_slot(&step, ai_card);
+        if step == DraftStep::PickHero {
+            self.ai_personality = Some(AiPersonality::from_hero(ai_card));
         }
 
-        if self.hp == 0 {
-            self.phase = GamePhase::Dead;
-            return;
-        }
-
-        self.cards_resolved += 1;
-        self.finish_room();
+        self.phase = GamePhase::DraftReveal { step };
     }
 
-    fn fight(&mut self, monster: Card) {
-        let damage: u32;
+    pub fn advance_from_reveal(&mut self) {
+        let step = match &self.phase {
+            GamePhase::DraftReveal { step } => step.clone(),
+            _ => return,
+        };
 
-        if let Some(ref mut weapon) = self.weapon {
-            if weapon.can_fight(monster.value()) {
-                damage = monster.value().saturating_sub(weapon.card.value()) as u32;
-                self.message = format!(
-                    "Fought {} with {} — took {} damage.",
-                    monster,
-                    weapon.card,
-                    damage
-                );
-                weapon.bound_to = Some(monster.value());
+        let next_step = match step {
+            DraftStep::PickHero => Some(DraftStep::PickWeapon),
+            DraftStep::PickWeapon => Some(DraftStep::PickApparel),
+            DraftStep::PickApparel => Some(DraftStep::PickItem),
+            DraftStep::PickItem => Some(DraftStep::PickArcana),
+            DraftStep::PickArcana => None,
+        };
+
+        self.cursor = 0;
+        match next_step {
+            None => self.start_combat(),
+            Some(DraftStep::PickArcana) => {
+                let choices = self.player_deck.draw_arcana(4);
+                let ai_choices = self.ai_deck.draw_arcana(4);
+                self.message = "Pick your Arcana.".to_string();
+                self.phase = GamePhase::Draft {
+                    step: DraftStep::PickArcana,
+                    choices,
+                    ai_choices,
+                };
+            }
+            Some(step) => {
+                let label = match &step {
+                    DraftStep::PickWeapon => "Pick your Weapon.",
+                    DraftStep::PickApparel => "Pick your Apparel.",
+                    DraftStep::PickItem => "Pick your Item.",
+                    _ => "Draft.",
+                };
+                let choices = self.player_deck.draw_numbered(4);
+                let ai_choices = self.ai_deck.draw_numbered(4);
+                self.message = label.to_string();
+                self.phase = GamePhase::Draft { step, choices, ai_choices };
+            }
+        }
+    }
+
+    fn start_combat(&mut self) {
+        let player_fighter = Fighter::new(
+            self.player.hero.unwrap(),
+            self.player.weapon.unwrap(),
+            self.player.apparel.unwrap(),
+            self.player.item.unwrap(),
+            self.player.arcana.unwrap(),
+        );
+        let ai_fighter = Fighter::new(
+            self.ai_state.hero.unwrap(),
+            self.ai_state.weapon.unwrap(),
+            self.ai_state.apparel.unwrap(),
+            self.ai_state.item.unwrap(),
+            self.ai_state.arcana.unwrap(),
+        );
+        let combat_rng = ChaCha8Rng::from_rng(&mut self.rng);
+        self.combat = Some(CombatState::new(player_fighter, ai_fighter, combat_rng));
+        self.phase = GamePhase::Combat;
+        self.message = "Combat begins! Choose your action.".to_string();
+    }
+
+    pub fn combat_action(&mut self, action: CombatAction) {
+        {
+            let combat = match self.combat.as_ref() {
+                Some(c) => c,
+                None => return,
+            };
+            if !combat.awaiting_action || combat.combat_over {
+                return;
+            }
+            if !combat.action_available(Side::Player, action) {
+                return;
+            }
+        }
+
+        // Immutable borrow for AI pick, then mutable for resolve
+        let ai_action = {
+            let combat = self.combat.as_ref().unwrap();
+            ai::combat_pick(combat, self.ai_personality.as_ref(), &mut self.rng)
+        };
+        let combat = self.combat.as_mut().unwrap();
+        combat.resolve_turn(action, ai_action);
+
+        if combat.combat_over {
+            self.message = if combat.player_won {
+                format!("Fight {}/{} — Victory! [Space] to continue", self.fight, MAX_FIGHTS)
             } else {
-                damage = monster.value() as u32;
-                self.message = format!(
-                    "Weapon can't fight {} (bound to {}). Bare-handed — took {} damage.",
-                    monster,
-                    weapon.bound_to.unwrap_or(0),
-                    damage
-                );
+                format!("Fight {}/{} — Defeated. [Space] to continue", self.fight, MAX_FIGHTS)
+            };
+        }
+    }
+
+    pub fn advance_from_combat(&mut self) {
+        let combat = match self.combat.as_ref() {
+            Some(c) if c.combat_over => c,
+            _ => return,
+        };
+        let player_won = combat.player_won;
+
+        if player_won {
+            self.fights_won += 1;
+            if self.fight >= MAX_FIGHTS {
+                self.phase = GamePhase::GameOver { victory: true };
+            } else {
+                self.fight += 1;
+                self.start_fight();
             }
         } else {
-            damage = monster.value() as u32;
-            self.message = format!("Fought {} bare-handed — took {} damage.", monster, damage);
-        }
-
-        self.hp = self.hp.saturating_sub(damage);
-    }
-
-    fn equip_weapon(&mut self, card: Card) {
-        self.message = format!("Equipped {}.", card);
-        self.weapon = Some(WeaponState {
-            card,
-            bound_to: None,
-        });
-    }
-
-    fn use_potion(&mut self, card: Card) {
-        let new_hp = (self.hp + card.value() as u32).min(self.max_hp);
-        let healed = new_hp - self.hp;
-        self.hp = new_hp;
-        self.used_potion_this_room = true;
-        self.message = format!(
-            "Used {} — healed {} HP ({}/{}).",
-            card, healed, self.hp, self.max_hp
-        );
-    }
-
-    pub fn run(&mut self) {
-        if self.phase != GamePhase::Playing {
-            return;
-        }
-        if !self.can_run {
-            self.message = "Cannot run from this room!".to_string();
-            return;
-        }
-
-        let remaining: Vec<Card> = self.room.iter_mut().filter_map(|s| s.take()).collect();
-        self.deck.push_many(remaining);
-        self.deck.shuffle(&mut self.rng);
-
-        self.held_card = None;
-        self.can_run = false;
-        self.message = "You ran! Cards shuffled back into the deck.".to_string();
-
-        self.deal_room();
-    }
-
-    fn finish_room(&mut self) {
-        let remaining: Vec<(usize, Card)> = self
-            .room
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| s.map(|c| (i, c)))
-            .collect();
-
-        let is_final_room = self.deck.is_empty() && self.held_card.is_none();
-
-        if is_final_room {
-            if remaining.is_empty() {
-                self.phase = GamePhase::Won;
-                self.message = "You survived the dungeon! You won!".to_string();
-            }
-            return;
-        }
-
-        if remaining.len() == 1 {
-            let (idx, card) = remaining[0];
-            self.room[idx] = None;
-            self.held_card = Some(card);
-            self.can_run = true;
-            self.deal_room();
+            self.phase = GamePhase::GameOver { victory: false };
         }
     }
 }

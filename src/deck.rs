@@ -1,77 +1,56 @@
 use rand::seq::SliceRandom;
 
-use crate::card::{Card, Rank, Suit};
+use crate::card::{CourtRank, MajorArcana, MinorSuit, TarotCard};
 
-#[derive(Debug)]
-pub struct Deck {
-    cards: Vec<Card>,
+#[derive(Debug, Clone)]
+pub struct TarotDeck {
+    pub court: Vec<TarotCard>,
+    pub numbered: Vec<TarotCard>,
+    pub arcana: Vec<TarotCard>,
 }
 
-impl Deck {
-    pub fn new_scoundrel() -> Self {
-        let mut cards = Vec::with_capacity(44);
+impl TarotDeck {
+    pub fn new() -> Self {
+        let mut court = Vec::with_capacity(16);
+        let mut numbered = Vec::with_capacity(40);
+        let mut arcana = Vec::with_capacity(22);
 
-        for &suit in &[Suit::Clubs, Suit::Spades] {
-            for &rank in &[
-                Rank::Two,
-                Rank::Three,
-                Rank::Four,
-                Rank::Five,
-                Rank::Six,
-                Rank::Seven,
-                Rank::Eight,
-                Rank::Nine,
-                Rank::Ten,
-                Rank::Jack,
-                Rank::Queen,
-                Rank::King,
-                Rank::Ace,
-            ] {
-                cards.push(Card { suit, rank });
+        for suit in MinorSuit::ALL {
+            for rank in CourtRank::ALL {
+                court.push(TarotCard::Court { suit, rank });
+            }
+            for value in 1..=10 {
+                numbered.push(TarotCard::Numbered { suit, value });
             }
         }
 
-        for &suit in &[Suit::Diamonds, Suit::Hearts] {
-            for &rank in &[
-                Rank::Two,
-                Rank::Three,
-                Rank::Four,
-                Rank::Five,
-                Rank::Six,
-                Rank::Seven,
-                Rank::Eight,
-                Rank::Nine,
-                Rank::Ten,
-            ] {
-                cards.push(Card { suit, rank });
-            }
+        for a in MajorArcana::ALL {
+            arcana.push(TarotCard::Major(a));
         }
 
-        Self { cards }
+        Self { court, numbered, arcana }
     }
 
-    pub fn shuffle(&mut self, rng: &mut impl rand::Rng) {
-        self.cards.shuffle(rng);
+    pub fn shuffle_all(&mut self, rng: &mut impl rand::Rng) {
+        self.court.shuffle(rng);
+        self.numbered.shuffle(rng);
+        self.arcana.shuffle(rng);
     }
 
-    pub fn draw(&mut self, n: usize) -> Vec<Card> {
-        let split = self.cards.len().saturating_sub(n);
-        self.cards.split_off(split)
+    pub fn draw_court(&mut self, n: usize) -> Vec<TarotCard> {
+        draw_n(&mut self.court, n)
     }
 
-    pub fn remaining(&self) -> usize {
-        self.cards.len()
+    pub fn draw_numbered(&mut self, n: usize) -> Vec<TarotCard> {
+        draw_n(&mut self.numbered, n)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.cards.is_empty()
+    pub fn draw_arcana(&mut self, n: usize) -> Vec<TarotCard> {
+        draw_n(&mut self.arcana, n)
     }
+}
 
-    pub fn push(&mut self, card: Card) {
-        self.cards.push(card);
-    }
-
-    pub fn push_many(&mut self, cards: Vec<Card>) {
-        self.cards.extend(cards);
-    }
+fn draw_n(pool: &mut Vec<TarotCard>, n: usize) -> Vec<TarotCard> {
+    let split = pool.len().saturating_sub(n);
+    pool.split_off(split)
 }
