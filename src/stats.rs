@@ -27,7 +27,7 @@ impl Stats {
 pub fn hero_base_stats(suit: MinorSuit) -> Stats {
     match suit {
         MinorSuit::Swords => Stats { attack: 7, speed: 5, hp: 14, defense: 3 },
-        MinorSuit::Wands => Stats { attack: 4, speed: 8, hp: 14, defense: 4 },
+        MinorSuit::Wands => Stats { attack: 5, speed: 8, hp: 14, defense: 4 },
         MinorSuit::Cups => Stats { attack: 4, speed: 4, hp: 24, defense: 2 },
         MinorSuit::Pentacles => Stats { attack: 3, speed: 3, hp: 14, defense: 12 },
     }

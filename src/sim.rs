@@ -289,24 +289,32 @@ fn compare_tweaks(config: &SimConfig) {
 
     println!("=== A/B Comparison: {n} fights, same drafts ===\n");
 
-    let d = BalanceTweaks::default();
+    let d = BalanceTweaks::default(); // thorns 12%, bulk +1/6hp>20
     let variants: Vec<(&str, BalanceTweaks)> = vec![
-        ("Baseline", d),
-        // --- Best candidates from prior runs, fine-tuning ---
-        ("T12% + Bulk +1/8hp>20", BalanceTweaks { thorns_pct: 12, hp_bulk_threshold: 20, hp_bulk_per: 8, ..d }),
-        ("T12% + Bulk +1/6hp>20", BalanceTweaks { thorns_pct: 12, hp_bulk_threshold: 20, hp_bulk_per: 6, ..d }),
-        ("T12% + Bulk +1/7hp>20", BalanceTweaks { thorns_pct: 12, hp_bulk_threshold: 20, hp_bulk_per: 7, ..d }),
-        ("T13% + Bulk +1/7hp>20", BalanceTweaks { thorns_pct: 13, hp_bulk_threshold: 20, hp_bulk_per: 7, ..d }),
-        ("T14% + Bulk +1/7hp>20", BalanceTweaks { thorns_pct: 14, hp_bulk_threshold: 20, hp_bulk_per: 7, ..d }),
-        ("T12% + Bulk +1/7hp>22", BalanceTweaks { thorns_pct: 12, hp_bulk_threshold: 22, hp_bulk_per: 7, ..d }),
-        ("T13% + Bulk +1/8hp>20", BalanceTweaks { thorns_pct: 13, hp_bulk_threshold: 20, hp_bulk_per: 8, ..d }),
-        ("T14% + Bulk +1/8hp>20", BalanceTweaks { thorns_pct: 14, hp_bulk_threshold: 20, hp_bulk_per: 8, ..d }),
+        ("Current (no tempo)", d),
+        ("Tempo 8",  BalanceTweaks { tempo_threshold: 8, ..d }),
+        ("Tempo 10", BalanceTweaks { tempo_threshold: 10, ..d }),
+        ("Tempo 12", BalanceTweaks { tempo_threshold: 12, ..d }),
     ];
 
     for (label, tweaks) in &variants {
         let results = run_with_tweaks(&pairs, tweaks, &base_rng, false);
         let stats = analyze(&results);
         print_quick(label, &stats);
+
+        // Show Wands heroes specifically (the problem children)
+        let mut hero_rec: HashMap<String, WinRecord> = HashMap::new();
+        for f in &results {
+            hero_rec.entry(format!("{}", f.p1_hero)).or_insert_with(WinRecord::new).add(f.p1_won);
+            hero_rec.entry(format!("{}", f.p2_hero)).or_insert_with(WinRecord::new).add(!f.p1_won);
+        }
+        let mut hero_list: Vec<_> = hero_rec.into_iter().collect();
+        hero_list.sort_by(|a, b| b.1.rate().partial_cmp(&a.1.rate()).unwrap());
+        print!("    Bottom 4: ");
+        for (hero, rec) in hero_list.iter().rev().take(4) {
+            print!(" {}:{:.0}%", hero, rec.rate());
+        }
+        println!("\n");
     }
 }
 

@@ -18,15 +18,17 @@ pub struct BalanceTweaks {
     /// Positive when above 50% HP, negative below (clamped to 0 min)
     pub hp_ratio_scale: i32,
     /// HP bulk bonus: +1 damage per hp_bulk_per HP above hp_bulk_threshold
-    /// Rewards high max_hp builds (Cups niche)
     pub hp_bulk_threshold: i32,
     pub hp_bulk_per: i32,
+    /// Tempo: accumulate (your_spd - opp_spd) each turn; bonus action at threshold
+    /// 0 = disabled
+    pub tempo_threshold: i32,
 }
 
 impl Default for BalanceTweaks {
     fn default() -> Self {
         Self { thorns_pct: 12, cycle_damage_bonus: 0, hp_ratio_scale: 0,
-               hp_bulk_threshold: 20, hp_bulk_per: 6 }
+               hp_bulk_threshold: 20, hp_bulk_per: 6, tempo_threshold: 10 }
     }
 }
 
@@ -231,6 +233,7 @@ pub struct CombatState {
     applied_flat_bonus: i32,
     items_swapped: bool,
     pub tweaks: BalanceTweaks,
+    pub tempo: [i32; 2],
 }
 
 impl CombatState {
@@ -295,6 +298,7 @@ impl CombatState {
             applied_flat_bonus: 0,
             items_swapped: false,
             tweaks,
+            tempo: [0; 2],
         };
 
         // Apply World bonus
@@ -645,6 +649,32 @@ impl CombatState {
                         let h = f.diminished_heal(adjusted);
                         f.current_hp = (f.current_hp + h).min(f.max_hp);
                         self.log.push(format!("{name} {verb} {h} HP (Fate) [base {base}, rolled {}]", roll.fmt()));
+                    }
+                }
+            }
+        }
+
+        // Tempo: accumulate speed differential, fire bonus actions
+        if self.tweaks.tempo_threshold > 0 {
+            let p_spd = self.player.stats.speed;
+            let a_spd = self.ai.stats.speed;
+            let diff = p_spd - a_spd;
+            if diff > 0 {
+                self.tempo[0] += diff;
+            } else if diff < 0 {
+                self.tempo[1] += -diff;
+            }
+
+            for (si, side, action) in [(0, Side::Player, player_action), (1, Side::Ai, ai_action)] {
+                if self.tempo[si] >= self.tweaks.tempo_threshold {
+                    self.tempo[si] -= self.tweaks.tempo_threshold;
+                    let name = side.name();
+                    self.log.push(format!("{name} surges with speed — bonus action!"));
+                    // Repeat the action they just used (amplifies archetype)
+                    let target_alive = self.fighter(side.opponent()).current_hp > 0;
+                    let self_alive = self.fighter(side).current_hp > 0;
+                    if target_alive && self_alive {
+                        self.apply_action(action, side, &mut flags);
                     }
                 }
             }
