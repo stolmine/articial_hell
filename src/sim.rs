@@ -211,6 +211,7 @@ struct QuickStats {
     off_vs_def: f64,
     avg_turns: f64,
     dominant_pct: f64,
+    stat_delta: [f64; 4], // ATK, DEF, HP, SPD winner-loser deltas
 }
 
 fn analyze(results: &[FightResult]) -> QuickStats {
@@ -223,6 +224,9 @@ fn analyze(results: &[FightResult]) -> QuickStats {
     let mut off_wins = 0usize;
     let mut mixed_total = 0usize;
     let mut dominant = 0usize;
+
+    let (mut w_atk, mut w_def, mut w_hp, mut w_spd) = (0i64, 0i64, 0i64, 0i64);
+    let (mut l_atk, mut l_def, mut l_hp, mut l_spd) = (0i64, 0i64, 0i64, 0i64);
 
     for f in results {
         let s1 = f.p1_hero.suit().unwrap_or(MinorSuit::Swords);
@@ -244,6 +248,10 @@ fn analyze(results: &[FightResult]) -> QuickStats {
 
         let (whp, wmax) = if f.p1_won { (f.p1_hp_remaining, f.p1_max_hp) } else { (f.p2_hp_remaining, f.p2_max_hp) };
         if whp * 100 / wmax.max(1) > 50 { dominant += 1; }
+
+        let (ws, ls) = if f.p1_won { (&f.p1_stats, &f.p2_stats) } else { (&f.p2_stats, &f.p1_stats) };
+        w_atk += ws.attack as i64; w_def += ws.defense as i64; w_hp += ws.hp as i64; w_spd += ws.speed as i64;
+        l_atk += ls.attack as i64; l_def += ls.defense as i64; l_hp += ls.hp as i64; l_spd += ls.speed as i64;
     }
 
     let mut suit_wr: Vec<_> = suit_rec.into_iter().map(|(s, r)| (s, r.rate())).collect();
@@ -251,12 +259,19 @@ fn analyze(results: &[FightResult]) -> QuickStats {
     let mut rank_wr: Vec<_> = rank_rec.into_iter().map(|(r, rec)| (r, rec.rate())).collect();
     rank_wr.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
+    let wn = n as f64;
     QuickStats {
         suit_wr: [suit_wr[0], suit_wr[1], suit_wr[2], suit_wr[3]],
         rank_wr: [rank_wr[0], rank_wr[1], rank_wr[2], rank_wr[3]],
         off_vs_def: if mixed_total > 0 { off_wins as f64 / mixed_total as f64 * 100.0 } else { 50.0 },
-        avg_turns: results.iter().map(|f| f.turns as f64).sum::<f64>() / n as f64,
-        dominant_pct: dominant as f64 / n as f64 * 100.0,
+        avg_turns: results.iter().map(|f| f.turns as f64).sum::<f64>() / wn,
+        dominant_pct: dominant as f64 / wn * 100.0,
+        stat_delta: [
+            (w_atk - l_atk) as f64 / wn,
+            (w_def - l_def) as f64 / wn,
+            (w_hp - l_hp) as f64 / wn,
+            (w_spd - l_spd) as f64 / wn,
+        ],
     }
 }
 
@@ -270,6 +285,8 @@ fn print_quick(label: &str, s: &QuickStats) {
     println!();
     println!("    Off vs Def: {:.1}% | Avg turns: {:.1} | Dominant wins: {:.0}%",
         s.off_vs_def, s.avg_turns, s.dominant_pct);
+    println!("    Stat delta: ATK:{:+.1} DEF:{:+.1} HP:{:+.1} SPD:{:+.1}",
+        s.stat_delta[0], s.stat_delta[1], s.stat_delta[2], s.stat_delta[3]);
     println!();
 }
 
