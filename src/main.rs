@@ -8,6 +8,7 @@ mod ai;
 mod theme;
 mod ui;
 mod sim;
+mod progression;
 
 use std::io;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};

@@ -6,7 +6,7 @@ use crate::card::{TarotCard, MinorSuit, CourtRank};
 use crate::combat::{BalanceTweaks, CombatState, Fighter, Side};
 use crate::deck::TarotDeck;
 use crate::game::{DraftStep, PlayerState};
-use crate::stats::derive_stats;
+use crate::progression;
 
 // --- Config ---
 
@@ -71,7 +71,8 @@ pub struct FightResult {
 pub struct CampaignResult {
     pub fights: Vec<FightResult>,
     pub p1_wins: usize,
-    pub completed: bool, // p1 survived all 10 fights
+    pub completed: bool,
+    pub final_progression: progression::ProgressionState,
 }
 
 // --- Persistent campaign state (placeholder for progression systems) ---
@@ -81,7 +82,7 @@ pub struct CampaignState {
     pub fight_number: usize,
     pub p1_wins: usize,
     pub p1_losses: usize,
-    // Future: suit affinity, rank path, AI scaling factor
+    pub progression: progression::ProgressionState,
 }
 
 // --- Core sim functions ---
@@ -128,23 +129,45 @@ fn run_combat(
     rng: &mut ChaCha8Rng,
     tweaks: &BalanceTweaks,
     log: &LogFlags,
-    _campaign: &CampaignState,
+    campaign: &CampaignState,
 ) -> FightResult {
-    let f1 = Fighter::new(
+    let mut f1 = Fighter::new(
         p1.hero.unwrap(), p1.weapon.unwrap(),
         p1.apparel.unwrap(), p1.item.unwrap(),
     );
-    let f2 = Fighter::new(
+    let mut f2 = Fighter::new(
         p2.hero.unwrap(), p2.weapon.unwrap(),
         p2.apparel.unwrap(), p2.item.unwrap(),
     );
+
+    // Apply progression bonus to P1
+    let p1_equip = [p1.weapon.unwrap(), p1.apparel.unwrap(), p1.item.unwrap()];
+    let p1_prog_delta = progression::progression_bonus(
+        &campaign.progression, p1.hero.unwrap(), &p1_equip,
+    );
+    f1.stats.add(&p1_prog_delta);
+    f1.max_hp = f1.stats.hp;
+    f1.current_hp = f1.max_hp;
+
+    // Apply AI scaling + boss bonus to P2
+    let ai_bonus = progression::ai_scaling_bonus(&campaign.progression)
+        + progression::ai_boss_bonus(campaign.fight_number, crate::game::MAX_FIGHTS);
+    let mut ai_delta = crate::stats::Stats::default();
+    if ai_bonus > 0 {
+        ai_delta.add_flat(ai_bonus);
+        f2.stats.add_flat(ai_bonus);
+        f2.max_hp = f2.stats.hp;
+        f2.current_hp = f2.max_hp;
+    }
+
     let p1_hero = p1.hero.unwrap();
     let p2_hero = p2.hero.unwrap();
-    let p1_stats = derive_stats(p1_hero, p1.weapon.unwrap(), p1.apparel.unwrap(), p1.item.unwrap());
-    let p2_stats = derive_stats(p2_hero, p2.weapon.unwrap(), p2.apparel.unwrap(), p2.item.unwrap());
+    let p1_stats = f1.stats;
+    let p2_stats = f2.stats;
 
     let combat_rng = ChaCha8Rng::from_rng(rng);
     let mut combat = CombatState::new_with_tweaks(f1, f2, combat_rng, *tweaks);
+    combat.progression_delta = [p1_prog_delta, ai_delta];
 
     let max_turns = 200;
     let mut turn_count = 0;
@@ -303,6 +326,13 @@ fn run_campaign(rng: &mut ChaCha8Rng, tweaks: &BalanceTweaks, log: &LogFlags) ->
         }
 
         let (p1, p1_pers) = ai_draft(&mut p1_deck, rng, log.draft, "P1", &state);
+        // Record P1 draft for progression
+        if let Some(hero) = p1.hero {
+            progression::record_hero_pick(&mut state.progression, hero);
+        }
+        for card in [p1.weapon, p1.apparel, p1.item].into_iter().flatten() {
+            progression::record_equipment_pick(&mut state.progression, card);
+        }
         let (p2, p2_pers) = ai_draft(&mut p2_deck, rng, log.draft, "P2", &state);
 
         if log.any() {
@@ -320,6 +350,14 @@ fn run_campaign(rng: &mut ChaCha8Rng, tweaks: &BalanceTweaks, log: &LogFlags) ->
             state.p1_losses += 1;
         }
 
+        // Record fight for progression
+        let hp_margin_pct = if result.p1_won {
+            result.p1_hp_remaining * 100 / result.p1_max_hp.max(1)
+        } else {
+            0
+        };
+        progression::record_fight(&mut state.progression, result.p1_won, hp_margin_pct);
+
         let p1_won = result.p1_won;
         fights.push(result);
 
@@ -331,7 +369,7 @@ fn run_campaign(rng: &mut ChaCha8Rng, tweaks: &BalanceTweaks, log: &LogFlags) ->
 
     let p1_wins = state.p1_wins;
     let completed = p1_wins == FIGHTS_PER_CAMPAIGN;
-    CampaignResult { fights, p1_wins, completed }
+    CampaignResult { fights, p1_wins, completed, final_progression: state.progression }
 }
 
 pub fn run_campaigns(config: &SimConfig) -> Vec<CampaignResult> {
@@ -376,6 +414,34 @@ fn campaign_report(config: &SimConfig) {
         if *count > 0 {
             let bar = "#".repeat((*count * 40 / n).max(if *count > 0 { 1 } else { 0 }));
             println!("  {:>2} wins: {:>4} ({:>5.1}%) {bar}", wins, count, *count as f64 / n as f64 * 100.0);
+        }
+    }
+
+    // Progression stats
+    let total_affinity: f64 = results.iter()
+        .map(|c| c.final_progression.suit_affinity.iter().map(|&a| a as f64).sum::<f64>())
+        .sum::<f64>() / n as f64;
+    let avg_ai_bonus: f64 = results.iter()
+        .map(|c| progression::ai_scaling_bonus(&c.final_progression) as f64)
+        .sum::<f64>() / n as f64;
+
+    println!("\n--- PROGRESSION ---");
+    println!("  Avg affinity picks: {total_affinity:.1} | Avg AI scaling: {avg_ai_bonus:.1}");
+
+    // Win rate by fight number
+    println!("\n--- WIN RATE BY FIGHT ---");
+    for fight_idx in 0..FIGHTS_PER_CAMPAIGN {
+        let mut wins = 0usize;
+        let mut total = 0usize;
+        for c in &results {
+            if fight_idx < c.fights.len() {
+                total += 1;
+                if c.fights[fight_idx].p1_won { wins += 1; }
+            }
+        }
+        if total > 0 {
+            println!("  Fight {:>2}: {:>5.1}% ({}/{})",
+                fight_idx + 1, wins as f64 / total as f64 * 100.0, wins, total);
         }
     }
 

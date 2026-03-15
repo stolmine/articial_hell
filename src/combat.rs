@@ -234,6 +234,7 @@ pub struct CombatState {
     items_swapped: bool,
     pub tweaks: BalanceTweaks,
     pub tempo: [i32; 2],
+    pub progression_delta: [Stats; 2],
 }
 
 impl CombatState {
@@ -299,6 +300,7 @@ impl CombatState {
             items_swapped: false,
             tweaks,
             tempo: [0; 2],
+            progression_delta: [Stats::default(); 2],
         };
 
         // Apply World bonus
@@ -320,6 +322,8 @@ impl CombatState {
         let a_item = self.ai.item;
         self.player.reassign_equipment(self.player.weapon, self.player.apparel, a_item);
         self.ai.reassign_equipment(self.ai.weapon, self.ai.apparel, p_item);
+        self.reapply_progression(Side::Player);
+        self.reapply_progression(Side::Ai);
         self.items_swapped = !self.items_swapped;
         if self.items_swapped {
             self.log.push("The Fool swaps items between fighters!".to_string());
@@ -571,6 +575,7 @@ impl CombatState {
             if let Some(cards) = self.queen_original_cards[1] {
                 let best = crate::ai::queen_reassign(&self.ai, cards);
                 self.ai.reassign_equipment(best.0, best.1, best.2);
+                self.reapply_progression(Side::Ai);
                 self.log.push(format!("Enemy Queen reshapes: Wpn={} App={} Itm={}", best.0, best.1, best.2));
             }
         }
@@ -582,8 +587,25 @@ impl CombatState {
         }
     }
 
+    fn reapply_progression(&mut self, side: Side) {
+        let delta = self.progression_delta[side.index()];
+        if delta.attack == 0 && delta.speed == 0 && delta.hp == 0 && delta.defense == 0 {
+            return;
+        }
+        let f = self.fighter_mut(side);
+        f.stats.add(&delta);
+        let old_max = f.max_hp;
+        f.max_hp = f.stats.hp;
+        if old_max != f.max_hp && old_max > 0 {
+            let ratio = f.current_hp as f64 / old_max as f64;
+            f.current_hp = (f.max_hp as f64 * ratio).round() as i32;
+            f.current_hp = f.current_hp.clamp(1, f.max_hp);
+        }
+    }
+
     pub fn queen_reassign_complete(&mut self, weapon: TarotCard, apparel: TarotCard, item: TarotCard) {
         self.player.reassign_equipment(weapon, apparel, item);
+        self.reapply_progression(Side::Player);
         self.awaiting_queen_reassign = false;
         self.awaiting_action = true;
         self.log.push(format!("Your Queen reshapes: Wpn={weapon} App={apparel} Itm={item}"));

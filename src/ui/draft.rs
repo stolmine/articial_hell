@@ -1,6 +1,6 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
-use crate::card::TarotCard;
+use crate::card::{TarotCard, CourtRank, MinorSuit};
 use crate::game::{GamePhase, GameState, DraftStep, PlayerState};
 use crate::stats::{partial_derive, Stats};
 use crate::theme::Theme;
@@ -19,6 +19,28 @@ fn prospective_stats(player: &PlayerState, step: &DraftStep, card: TarotCard) ->
         DraftStep::PickItem => p.item = Some(card),
     }
     partial_derive(p.hero, p.weapon, p.apparel, p.item)
+}
+
+fn prospective_combat_stats(game: &GameState, step: &DraftStep, card: TarotCard) -> Option<(Stats, Stats)> {
+    let prog = game.campaign.as_ref()?;
+    let mut p = game.player.clone();
+    match step {
+        DraftStep::PickHero => p.hero = Some(card),
+        DraftStep::PickWeapon => p.weapon = Some(card),
+        DraftStep::PickApparel => p.apparel = Some(card),
+        DraftStep::PickItem => p.item = Some(card),
+    }
+    let hero = p.hero?;
+    let equip: Vec<TarotCard> = [p.weapon, p.apparel, p.item].into_iter().flatten().collect();
+    let prog_delta = crate::progression::progression_bonus(prog, hero, &equip);
+    let base = prospective_stats(&game.player, step, card);
+    let mut combat = base;
+    combat.add(&prog_delta);
+    if prog_delta.attack != 0 || prog_delta.speed != 0 || prog_delta.hp != 0 || prog_delta.defense != 0 {
+        Some((prog_delta, combat))
+    } else {
+        None
+    }
 }
 
 fn stat_diff_line(label: &str, cur: i32, next: i32, t: &Theme) -> Line<'static> {
@@ -67,7 +89,11 @@ pub fn render_draft(frame: &mut Frame, game: &GameState) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("ARTICIAL HELL — Fight {}/{} Draft — Pick {}", game.fight, crate::game::MAX_FIGHTS, step_label),
+            if game.fight == crate::game::MAX_FIGHTS {
+                format!("ARTICIAL HELL — FINAL BATTLE — Pick {}", step_label)
+            } else {
+                format!("ARTICIAL HELL — Fight {}/{} Draft — Pick {}", game.fight, crate::game::MAX_FIGHTS, step_label)
+            },
             Style::default().fg(t.heading).add_modifier(Modifier::BOLD),
         )).centered())
         .block(Block::bordered()),
@@ -93,7 +119,7 @@ pub fn render_draft(frame: &mut Frame, game: &GameState) {
     .areas(info_area);
 
     let tooltip_lines = if game.cursor < choices.len() {
-        tooltip::card_tooltip(&choices[game.cursor], &step, &game.player, t)
+        tooltip::card_tooltip(&choices[game.cursor], &step, &game.player, game.campaign.as_ref(), t)
     } else {
         vec![]
     };
@@ -146,6 +172,16 @@ fn render_stats_pane(
             lines.push(stat_diff_line("HP ", cur.hp, next.hp, t));
             lines.push(stat_diff_line("DEF", cur.defense, next.defense, t));
         }
+
+        // Show actual combat stats when progression is active
+        if let Some((prog_delta, combat)) = prospective_combat_stats(game, step, focused) {
+            lines.push(Line::from(Span::styled(
+                format!("In combat: {}/{}/{}/{}  (+{}A {}S {}H {}D)",
+                    combat.attack, combat.speed, combat.hp, combat.defense,
+                    prog_delta.attack, prog_delta.speed, prog_delta.hp, prog_delta.defense),
+                Style::default().fg(t.info),
+            )));
+        }
     } else if has_hero {
         lines.push(Line::from(Span::styled("Current Stats", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))));
         lines.push(Line::from(""));
@@ -164,6 +200,75 @@ fn render_stats_pane(
     lines.push(Line::from(""));
     let picks = picks_summary(game, step, t);
     lines.extend(picks);
+
+    // Campaign progression
+    if let Some(ref prog) = game.campaign {
+        let has_any = prog.suit_affinity.iter().any(|&a| a > 0)
+            || prog.diversity_picks > 0
+            || prog.matching_picks > 0;
+        if has_any {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Campaign", Style::default().fg(t.heading).add_modifier(Modifier::BOLD))));
+
+            for (i, suit) in MinorSuit::ALL.iter().enumerate() {
+                let count = prog.suit_affinity[i];
+                if count > 0 {
+                    let pips = "+".repeat(count as usize);
+                    let stat = suit.stat_name();
+                    let sname = match suit {
+                        MinorSuit::Swords => "Swords",
+                        MinorSuit::Wands => "Wands",
+                        MinorSuit::Cups => "Cups",
+                        MinorSuit::Pentacles => "Pents",
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("{sname}: {pips} (+{count} {stat})"),
+                        Style::default().fg(t.text),
+                    )));
+                }
+            }
+
+            let hero_rank = game.player.hero.and_then(|h| h.court_rank());
+            let tier_str = match hero_rank {
+                Some(CourtRank::Page) | Some(CourtRank::Knight) => {
+                    let tier = (prog.diversity_picks as i32).min(2);
+                    if tier > 0 { Some(format!("Diversity Lv{}: +{}/suit", tier, 2 + tier)) } else { None }
+                }
+                Some(CourtRank::Queen) | Some(CourtRank::King) => {
+                    let tier = (prog.matching_picks as i32).min(2);
+                    if tier > 0 { Some(format!("Matching Lv{}: +{}/match", tier, 3 + tier)) } else { None }
+                }
+                None => None,
+            };
+            if let Some(ts) = tier_str {
+                lines.push(Line::from(Span::styled(ts, Style::default().fg(t.text))));
+            }
+
+            let survivor_bonus = prog.fights_survived as i32 / 2;
+            if survivor_bonus > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("Survivor: +{survivor_bonus} all stats"),
+                    Style::default().fg(t.positive),
+                )));
+            }
+
+            let ai_lvl = crate::progression::ai_scaling_bonus(prog);
+            if ai_lvl > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("AI Scaling: +{ai_lvl}"),
+                    Style::default().fg(t.negative),
+                )));
+            }
+
+            let boss = crate::progression::ai_boss_bonus(game.fight, crate::game::MAX_FIGHTS);
+            if boss > 0 {
+                lines.push(Line::from(Span::styled(
+                    format!("BOSS: +{boss} all enemy stats"),
+                    Style::default().fg(t.negative).add_modifier(Modifier::BOLD),
+                )));
+            }
+        }
+    }
 
     frame.render_widget(
         Paragraph::new(lines).block(Block::bordered().title(" Build ")),

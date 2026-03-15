@@ -5,6 +5,8 @@ use crate::deck::TarotDeck;
 use crate::combat::{CombatState, CombatAction, Fighter, Side};
 use crate::theme::Theme;
 use crate::ai::{self, AiPersonality};
+use crate::progression;
+use crate::stats::Stats;
 
 pub const MAX_FIGHTS: usize = 10;
 
@@ -75,6 +77,7 @@ pub struct GameState {
     pub ai_personality: Option<AiPersonality>,
     rng: ChaCha8Rng,
     pub queen_perm_index: usize,
+    pub campaign: Option<progression::ProgressionState>,
 }
 
 impl GameState {
@@ -88,6 +91,7 @@ impl GameState {
             ai_personality: None,
             rng: ChaCha8Rng::from_rng(&mut rand::rng()),
             queen_perm_index: 0,
+            campaign: None,
         }
     }
 
@@ -101,6 +105,7 @@ impl GameState {
             cursor: 0, theme: crate::theme::detect_theme(),
             ai_personality: None, rng,
             queen_perm_index: 0,
+            campaign: Some(progression::ProgressionState::default()),
         };
         state.start_fight();
         state
@@ -152,6 +157,15 @@ impl GameState {
         let card = choices[index];
         self.player.set_slot(&step, card);
 
+        // Record progression
+        if let Some(ref mut prog) = self.campaign {
+            if step == DraftStep::PickHero {
+                progression::record_hero_pick(prog, card);
+            } else {
+                progression::record_equipment_pick(prog, card);
+            }
+        }
+
         let ai_idx = ai::draft_pick(&ai_choices, &step, &self.ai_state, self.ai_personality.as_ref(), &mut self.rng, None);
         let ai_card = ai_choices[ai_idx];
         self.ai_state.set_slot(&step, ai_card);
@@ -194,20 +208,47 @@ impl GameState {
     }
 
     fn start_combat(&mut self) {
-        let player_fighter = Fighter::new(
+        let mut player_fighter = Fighter::new(
             self.player.hero.unwrap(),
             self.player.weapon.unwrap(),
             self.player.apparel.unwrap(),
             self.player.item.unwrap(),
         );
-        let ai_fighter = Fighter::new(
+        let mut ai_fighter = Fighter::new(
             self.ai_state.hero.unwrap(),
             self.ai_state.weapon.unwrap(),
             self.ai_state.apparel.unwrap(),
             self.ai_state.item.unwrap(),
         );
+
+        let mut p_delta = Stats::default();
+        let mut a_delta = Stats::default();
+
+        if let Some(ref prog) = self.campaign {
+            let equip = [
+                self.player.weapon.unwrap(),
+                self.player.apparel.unwrap(),
+                self.player.item.unwrap(),
+            ];
+            p_delta = progression::progression_bonus(prog, self.player.hero.unwrap(), &equip);
+            player_fighter.stats.add(&p_delta);
+            player_fighter.max_hp = player_fighter.stats.hp;
+            player_fighter.current_hp = player_fighter.max_hp;
+
+            let ai_bonus = progression::ai_scaling_bonus(prog)
+                + progression::ai_boss_bonus(self.fight, MAX_FIGHTS);
+            if ai_bonus > 0 {
+                a_delta.add_flat(ai_bonus);
+                ai_fighter.stats.add_flat(ai_bonus);
+                ai_fighter.max_hp = ai_fighter.stats.hp;
+                ai_fighter.current_hp = ai_fighter.max_hp;
+            }
+        }
+
         let combat_rng = ChaCha8Rng::from_rng(&mut self.rng);
-        self.combat = Some(CombatState::new(player_fighter, ai_fighter, combat_rng));
+        let mut combat = CombatState::new(player_fighter, ai_fighter, combat_rng);
+        combat.progression_delta = [p_delta, a_delta];
+        self.combat = Some(combat);
         self.phase = GamePhase::Combat;
         self.message = "Combat begins! Choose your action.".to_string();
     }
@@ -278,6 +319,17 @@ impl GameState {
             _ => return,
         };
         let player_won = combat.player_won;
+        let player_hp = combat.player.current_hp;
+        let player_max_hp = combat.player.max_hp;
+
+        if let Some(ref mut prog) = self.campaign {
+            let hp_margin_pct = if player_won {
+                player_hp * 100 / player_max_hp.max(1)
+            } else {
+                0
+            };
+            progression::record_fight(prog, player_won, hp_margin_pct);
+        }
 
         if player_won {
             self.fights_won += 1;

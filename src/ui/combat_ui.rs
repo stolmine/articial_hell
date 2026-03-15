@@ -28,7 +28,11 @@ pub fn render_combat(frame: &mut Frame, game: &GameState) {
         .unwrap_or_default();
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            format!("ARTICIAL HELL — Fight {}/{} — Cycle {}{}", game.fight, MAX_FIGHTS, combat.cycle, fate_str),
+            if game.fight == MAX_FIGHTS {
+                format!("ARTICIAL HELL — FINAL BATTLE — Cycle {}{}", combat.cycle, fate_str)
+            } else {
+                format!("ARTICIAL HELL — Fight {}/{} — Cycle {}{}", game.fight, MAX_FIGHTS, combat.cycle, fate_str)
+            },
             Style::default().fg(t.heading).add_modifier(Modifier::BOLD),
         )).centered())
         .block(Block::bordered()),

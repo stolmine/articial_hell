@@ -4,10 +4,10 @@ use crate::game::{DraftStep, PlayerState};
 use crate::stats::{hero_base_stats, equipment_primary, equipment_secondary, EquipSlot};
 use crate::theme::Theme;
 
-pub fn card_tooltip<'a>(card: &TarotCard, step: &DraftStep, player: &PlayerState, t: &Theme) -> Vec<Line<'a>> {
+pub fn card_tooltip<'a>(card: &TarotCard, step: &DraftStep, player: &PlayerState, campaign: Option<&crate::progression::ProgressionState>, t: &Theme) -> Vec<Line<'a>> {
     match card {
         TarotCard::Court { suit, rank } => court_tooltip(*suit, *rank, t),
-        TarotCard::Numbered { suit, value } => numbered_tooltip(*suit, *value, step, player, t),
+        TarotCard::Numbered { suit, value } => numbered_tooltip(*suit, *value, step, player, campaign, t),
         TarotCard::Major(_) => vec![],
     }
 }
@@ -21,9 +21,9 @@ fn court_tooltip(suit: MinorSuit, rank: CourtRank, t: &Theme) -> Vec<Line<'stati
         MinorSuit::Pentacles => "Tanky — high DEF base",
     };
     let rank_desc = match rank {
-        CourtRank::Page => "Diversity: +3 all stats per unique equipment suit (max +9)",
+        CourtRank::Page => "Diversity: +2 all stats per unique equipment suit (max +6)",
         CourtRank::Knight => "Diversity: +2 all stats per unique equipment suit (max +6)",
-        CourtRank::Queen => "Matching: +2 all stats per equipment matching hero suit (max +6)",
+        CourtRank::Queen => "Matching: +3 all stats per equipment matching hero suit (max +9)",
         CourtRank::King => "Matching: +3 all stats per equipment matching hero suit (max +9)",
     };
     let strategy = match rank {
@@ -64,7 +64,7 @@ fn court_tooltip(suit: MinorSuit, rank: CourtRank, t: &Theme) -> Vec<Line<'stati
     lines
 }
 
-fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &PlayerState, t: &Theme) -> Vec<Line<'static>> {
+fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &PlayerState, campaign: Option<&crate::progression::ProgressionState>, t: &Theme) -> Vec<Line<'static>> {
     let slot = match step {
         DraftStep::PickWeapon => EquipSlot::Weapon,
         DraftStep::PickApparel => EquipSlot::Apparel,
@@ -155,6 +155,19 @@ fn numbered_tooltip(suit: MinorSuit, value: u8, step: &DraftStep, player: &Playe
                     Style::default().fg(t.muted),
                 )));
             }
+        }
+    }
+
+    if let Some(prog) = campaign {
+        let idx = crate::progression::suit_index(suit);
+        let affinity = prog.suit_affinity[idx];
+        if affinity > 0 {
+            let stat = suit.stat_name();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("Affinity +{affinity}: +{affinity} {stat} per card of this suit"),
+                Style::default().fg(t.positive),
+            )));
         }
     }
 
